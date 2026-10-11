@@ -9,7 +9,7 @@ import * as Ts from 'typescript-api'
 import { describe, expect, test } from 'vite-plus/test'
 import { Config, Style, style } from 'zyzz'
 
-import { Graph, Source } from 'zyzz/compiler'
+import { Graph, Native, Source } from 'zyzz/compiler'
 import { Css } from 'zyzz/web'
 
 describe('style', () => {
@@ -1807,6 +1807,367 @@ dynamic({ width: '12px' })
         "className": "z-content-_5b__5b__22_padding_22__2c_0_2c_false_5d__5d_",
       }
     `)
+  })
+})
+
+describe('composition', () => {
+  const source = `import {style} from 'zyzz';
+export namespace styles {
+  export const base = style({ color: 'black', padding: '4px' })
+
+  export const focusRing = style({ ':focus-visible': { outline: '2px solid blue' } })
+
+  export const button = style([base, focusRing, { color: 'white', '@media (width >= 600px)': { padding: '8px' } }])
+}`
+
+  // Bundles one module with its own copy of the public entrypoints.
+  async function bundle(contents: string) {
+    const result = await Esbuild.build({
+      bundle: true,
+      conditions: ['src'],
+      format: 'iife',
+      globalName: 'Module',
+      platform: 'neutral',
+      stdin: { contents, loader: 'ts', resolveDir: process.cwd() },
+      write: false,
+    })
+    return new Function(
+      `${result.outputFiles[0]!.text}; return Module`,
+    )() as Record<string, unknown>
+  }
+
+  describe('style', () => {
+    test('compiles definitions and literal objects into ordered declarations', () => {
+      const result = Graph.compile({ modules: { 'app.ts': source } })
+
+      expect(result.modules['app.ts']!.css).toMatchInlineSnapshot(`
+        ".z-Zf5JrJ-styles-base-text-0{color:black;}
+        .z-Zf5JrJ-styles-base-p-1{padding:4px;}
+        .z-Zf5JrJ-styles-focusRing-outline-0{&:focus-visible{outline:2px solid blue;}}
+        .z-Zf5JrJ-styles-button-text-0{color:black;}
+        .z-Zf5JrJ-styles-button-p-1{padding:4px;}
+        .z-Zf5JrJ-styles-button-text-2{color:white;}
+        @media (width >= 600px){.z-Zf5JrJ-styles-button-p-3{padding:8px;}}"
+      `)
+      expect(result.modules['app.ts']!.code).toMatchInlineSnapshot(`
+        "
+        import { Props as __zyzzProps } from 'zyzz/runtime';
+
+        export namespace styles {
+          export const base = __zyzzProps.create({className:"z-Zf5JrJ-styles-base-text-0 z-Zf5JrJ-styles-base-p-1 z-style-Zf5JrJ-styles-base"})
+
+          export const focusRing = __zyzzProps.create({className:"z-Zf5JrJ-styles-focusRing-outline-0 z-style-Zf5JrJ-styles-focusRing"})
+
+          export const button = __zyzzProps.create({className:"z-Zf5JrJ-styles-button-text-0 z-Zf5JrJ-styles-button-p-1 z-Zf5JrJ-styles-focusRing-outline-0 z-Zf5JrJ-styles-button-text-2 z-Zf5JrJ-styles-button-p-3 z-style-Zf5JrJ-styles-button"})
+        }"
+      `)
+    })
+
+    test('composes grouped definitions, nested compositions, and configured tokens', () => {
+      const result = Graph.compile({
+        modules: {
+          'app.ts': `import { defineConfig } from 'zyzz'
+export const { style } = defineConfig({ cssOutput: 'grouped', vars: { color: { brand: '#06c' }, spacing: { sm: '4px' } } })
+const shared = { opacity: 0.5 }
+const base = style({ color: 'brand', padding: 'sm' })
+const wide = style([base, { '@media (width >= 600px)': { padding: '8px !custom' } }])
+export const card = style([wide, shared, { color: 'red !custom' }])`,
+        },
+      })
+
+      expect(result.modules['app.ts']!.css).toMatchInlineSnapshot(`
+        ".z-theme-theme{--z-color-brand:#06c;--z-spacing-sm:4px;}
+        .z-Zf5JrJ-base{color:var(--z-color-brand,#06c);padding:var(--z-spacing-sm,4px);}
+        .z-Zf5JrJ-wide{color:var(--z-color-brand,#06c);padding:var(--z-spacing-sm,4px);@media (width >= 600px){padding:8px;}}
+        .z-Zf5JrJ-card{color:var(--z-color-brand,#06c);padding:var(--z-spacing-sm,4px);@media (width >= 600px){padding:8px;}opacity:0.5;color:red;}"
+      `)
+    })
+
+    test('composes imported definitions across source and packed modules', () => {
+      const publisher = Graph.compile({
+        modules: {
+          'shared.ts': `import { style } from 'zyzz'
+export namespace shared { export const base = style({ padding: '4px', ':hover': { color: 'red' } }) }`,
+          'local.ts': `import { style } from 'zyzz'
+import { shared } from './shared.js'
+export const card = style([shared.base, { color: 'blue' }])`,
+        },
+      })
+      const app = Graph.compile({
+        modules: {
+          'app.ts': `import { style } from 'zyzz'
+import { shared } from './shared.js'
+export const card = style([shared.base, { color: 'blue' }])`,
+        },
+        contracts: publisher.contracts,
+        imports: { 'app.ts': { zyzz: null, './shared.js': 'shared.ts' } },
+      })
+
+      expect(publisher.modules['local.ts']!.css).toMatchInlineSnapshot(`
+        ".z-ewZ9zx-card-p-0{padding:4px;}
+        .z-ewZ9zx-card-text-1{&:hover{color:red;}}
+        .z-ewZ9zx-card-text-2{color:blue;}"
+      `)
+      expect(app.modules['app.ts']!.css).toMatchInlineSnapshot(`
+        ".z-Zf5JrJ-card-p-0{padding:4px;}
+        .z-Zf5JrJ-card-text-1{&:hover{color:red;}}
+        .z-Zf5JrJ-card-text-2{color:blue;}"
+      `)
+    })
+
+    test('applies the composing configuration output to every entry', () => {
+      const result = Graph.compile({
+        modules: {
+          'app.ts': `import { defineConfig } from 'zyzz'
+const grouped = defineConfig({ cssOutput: 'grouped', vars: {} })
+const atomic = defineConfig({ vars: {} })
+const base = grouped.style({ color: 'black', padding: '4px' })
+export const card = atomic.style([base, { color: 'white' }])`,
+        },
+      })
+
+      expect(result.modules['app.ts']!.css).toMatchInlineSnapshot(`
+        ".z-Zf5JrJ-base{color:black;padding:4px;}
+        .z-Zf5JrJ-card-text-0{color:black;}
+        .z-Zf5JrJ-card-p-1{padding:4px;}
+        .z-Zf5JrJ-card-text-2{color:white;}"
+      `)
+    })
+
+    test('rejects packed variants and dynamic definitions without owned attributes', () => {
+      const publisher = Graph.compile({
+        modules: {
+          'shared.ts': `import { style, variants } from 'zyzz'
+export const tone = variants({ base: { color: 'red' } }, { id: 'tone' })
+export const dynamic = style((input: { opacity: number }) => ({ opacity: 0.5 }), { id: 'dynamic' })`,
+        },
+      })
+
+      expect(() =>
+        Graph.compile({
+          modules: {
+            'app.ts': `import { style } from 'zyzz'
+import { dynamic, tone } from './shared.js'
+export const first = style([tone])
+export const second = style([dynamic])`,
+          },
+          contracts: publisher.contracts,
+          imports: { 'app.ts': { zyzz: null, './shared.js': 'shared.ts' } },
+        }),
+      ).toThrowErrorMatchingInlineSnapshot(`
+        [Source.ExtractError: app.ts:101: Composition entries cannot be variants or dynamic styles; apply them with cx.
+        app.ts:137: Composition entries cannot be variants or dynamic styles; apply them with cx.]
+      `)
+    })
+
+    test('composes definitions created by another bundled runtime copy', async () => {
+      const library = await bundle(
+        "import { style } from 'zyzz'; export const base = style({ padding: '4px' })",
+      )
+      const app = await bundle(
+        "import { style } from 'zyzz'; export const compose = (base) => style([base, { color: 'blue' }])().className",
+      )
+      const base = style({ padding: '4px' })
+
+      expect((app.compose as (base: unknown) => string)(library.base)).toBe(
+        style([base, { color: 'blue' }])().className,
+      )
+    })
+
+    test('names compositions of compiled package definitions with an explicit id', async () => {
+      const publisher = Graph.compile({
+        modules: {
+          'shared.ts': `import { style } from 'zyzz'
+export const base = style({ padding: '4px' })`,
+        },
+      })
+      const output = Graph.compile({
+        compiler: false,
+        modules: {
+          'app.ts': `import { style } from 'zyzz'
+import { base } from './shared.js'
+export const card = style([base, { color: 'blue' }], { id: 'card' })`,
+        },
+        contracts: publisher.contracts,
+        imports: { 'app.ts': { zyzz: null, './shared.js': 'shared.ts' } },
+      })
+      const library = await bundle(publisher.modules['shared.ts']!.code)
+
+      expect(Object.values(output.modules['app.ts']!.classes)).toContain(
+        style([library.base as never, { color: 'blue' }], { id: 'card' })()
+          .className,
+      )
+      expect(() =>
+        style([library.base as never, { color: 'blue' }]),
+      ).toThrowErrorMatchingInlineSnapshot(
+        `[Style.InvalidError: ["0"]: Composition entries require literal objects or static style definitions. Compositions of compiled definitions require an explicit id, and variants and dynamic styles are applied with cx.]`,
+      )
+    })
+
+    test('rejects native entries from another variable catalog', () => {
+      const source = (helper: string) => `import { Config } from 'zyzz'
+const { style: a } = Config.create({ vars: { base: { spacing: { cell: '2px' } }, alternate: { spacing: { cell: '6px' } } }, defaultVars: 'base' })
+const { style: b } = Config.create({ vars: { base: { spacing: { cell: '4px' } }, alternate: { spacing: { cell: '8px' } } }, defaultVars: 'base' })
+const width = a({ width: 'cell' })
+export const card = ${helper}([width, { height: 'cell' }])`
+
+      expect(() =>
+        Native.compile({
+          colorScheme: 'light',
+          contextual: true,
+          moduleId: 'app.ts',
+          source: source('b'),
+        }),
+      ).toThrowErrorMatchingInlineSnapshot(
+        `[Source.ExtractError: app.ts:382: Native composition entries require the variable catalog of the composing style.]`,
+      )
+
+      const output = Native.compile({
+        colorScheme: 'light',
+        contextual: true,
+        moduleId: 'app.ts',
+        source: source('a'),
+      })
+
+      expect(
+        output.code.slice(output.code.indexOf('export const card =')),
+      ).toMatchInlineSnapshot(
+        `"export const card = __zyzzNativeContextFactory0((__zyzzNative.create({"axes":{},"defaults":{},"styles":{"0":{"width":2,"height":2}}}) as import('zyzz/runtime').Native.Callable<{}>),(__zyzzNative.create({"axes":{},"defaults":{},"styles":{"0":{"width":6,"height":6}}}) as import('zyzz/runtime').Native.Callable<{}>))"`,
+      )
+    })
+
+    test('flattens composed entries and target branches into native styles', () => {
+      const output = Native.compile({
+        colorScheme: 'light',
+        moduleId: 'app.ts',
+        platform: 'ios',
+        source: `import { style } from 'zyzz'
+namespace styles {
+  export const base = style({ color: 'black', padding: '4px', targets: { ios: { shadowOpacity: 0.5 } } })
+
+  export const card = style([base, { color: 'white', paddingLeft: '8px' }])
+}
+export const card = styles.card`,
+      })
+
+      expect(output.code.slice(output.code.indexOf('export const card =')))
+        .toMatchInlineSnapshot(`
+        "export const card = (__zyzzNative.create({"axes":{},"defaults":{},"styles":{"0":{"color":"white","paddingTop":4,"paddingRight":4,"paddingBottom":4,"paddingLeft":8,"shadowOpacity":0.5}}}) as import('zyzz/runtime').Native.Callable<{}>)
+        }
+        export const card = styles.card"
+      `)
+    })
+
+    test('keeps CSS-only build identities aligned with runtime', () => {
+      const output = Graph.compile({
+        compiler: false,
+        modules: {
+          'card.ts': `import { style } from 'zyzz'
+const base = style({ padding: '4px', ':hover': { color: 'red' } })
+const flag = style({ opacity: 0.5 }, { id: 'flag' })
+export const card = style([base, flag, { color: 'blue' }])`,
+        },
+      })
+      const base = style({ padding: '4px', ':hover': { color: 'red' } })
+      const flag = style({ opacity: 0.5 }, { id: 'flag' })
+
+      expect(Object.values(output.modules['card.ts']!.classes)).toContain(
+        style([base, flag, { color: 'blue' }])().className,
+      )
+    })
+
+    test('rejects variants, dynamic definitions, spreads, and undeclared entries', () => {
+      expect(() =>
+        Source.extract({
+          moduleId: 'invalid.ts',
+          source: `import { style, variants } from 'zyzz'
+const tone = variants({ variants: { tone: { red: { color: 'red' } } } }, { id: 'tone' })
+const dynamic = style((input: { opacity: number }) => ({ opacity: input.opacity }), { id: 'dynamic' })
+const entries = [{ color: 'red' }]
+style([tone])
+style([dynamic])
+style([...entries])
+style([missing])
+style([style({ color: 'red' })])`,
+        }),
+      ).toThrowErrorMatchingInlineSnapshot(`
+        [Source.ExtractError: invalid.ts:273: Composition entries cannot be variants or dynamic styles; apply them with cx.
+        invalid.ts:287: Composition entries cannot be variants or dynamic styles; apply them with cx.
+        invalid.ts:304: Composition entries require literal objects or previously declared style definitions.
+        invalid.ts:324: Composition entries require literal objects or previously declared style definitions.
+        invalid.ts:341: Composition entries require literal objects or previously declared style definitions.]
+      `)
+      expect(() =>
+        style([
+          style((input: { opacity: number }) => ({ opacity: input.opacity }), {
+            id: 'dynamic',
+          }) as never,
+        ]),
+      ).toThrowErrorMatchingInlineSnapshot(
+        `[Style.InvalidError: ["0"]: Composition entries require literal objects or static style definitions. Compositions of compiled definitions require an explicit id, and variants and dynamic styles are applied with cx.]`,
+      )
+    })
+
+    test('renders later entries over earlier ones', async () => {
+      const result = Graph.compile({ modules: { 'app.ts': source } })
+      const built = await Esbuild.transform(result.modules['app.ts']!.code, {
+        format: 'esm',
+        loader: 'ts',
+      })
+      const browser = await chromium.launch({
+        headless: true,
+        args: ['--no-sandbox'],
+      })
+      try {
+        const page = await browser.newPage({
+          viewport: { height: 400, width: 400 },
+        })
+        // Bundle the actual public runtime alongside the transformed consumer module.
+        const bundled = await Esbuild.build({
+          stdin: {
+            contents: built.code,
+            resolveDir: process.cwd(),
+            sourcefile: 'app.js',
+          },
+          alias: { 'zyzz/runtime': `${process.cwd()}/src/runtime/index.ts` },
+          bundle: true,
+          format: 'iife',
+          globalName: 'App',
+          write: false,
+        })
+        await page.setContent(
+          `<style>${result.modules['app.ts']!.css}</style><div id="root"></div>`,
+        )
+        await page.addScriptTag({ content: bundled.outputFiles![0]!.text })
+        await page.evaluate(`{
+        const {styles} = App;
+        document.querySelector('#root').innerHTML = '<button id="button" class="'+styles.button().className+'">Save</button>';
+      }`)
+        const computed = () =>
+          page.locator('#button').evaluate((node) => {
+            const style = getComputedStyle(node)
+            return `${style.color} ${style.paddingTop} ${style.outlineStyle}`
+          })
+
+        expect(await computed()).toMatchInlineSnapshot(
+          `"rgb(255, 255, 255) 4px none"`,
+        )
+
+        await page.keyboard.press('Tab')
+
+        expect(await computed()).toMatchInlineSnapshot(
+          `"rgb(255, 255, 255) 4px solid"`,
+        )
+
+        await page.setViewportSize({ height: 400, width: 800 })
+
+        expect(await computed()).toMatchInlineSnapshot(
+          `"rgb(255, 255, 255) 8px solid"`,
+        )
+      } finally {
+        await browser.close()
+      }
+    })
   })
 })
 

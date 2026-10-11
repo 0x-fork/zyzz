@@ -10,6 +10,10 @@ import type * as Theme from './Theme.js'
 /** Private ownership used by uncompiled composition; never spread onto DOM props. */
 export const metadata = Symbol.for('zyzz.authoring')
 
+// Static definitions retain their style data so later compositions can read it,
+// including definitions created by another bundled copy of the runtime.
+const data = Symbol.for('zyzz.style')
+
 /** Identity and replaceable attribute/slot ownership for an applied definition. */
 export type Owner = {
   readonly name: string
@@ -77,24 +81,54 @@ export function create(
   if (!dynamic && !id && Object.keys(input as object).length === 0)
     Identity.requireId(undefined, 'Empty style')
 
-  if (id && !dynamic && options.theme)
-    Style.define({ style: body(input as Record<string, unknown>) } as never, {
-      vars: options.theme,
-    })
-  const className = id
-    ? `z-style-${id}`
-    : Identity.style(
-        (
-          Style.define as (
-            input: Record<string, unknown>,
-            options: Style.define.Options,
-          ) => Style.Definition
-        )(
-          { style: body(input as Record<string, unknown>) },
-          { vars: options.theme },
-        ).styles[0]!,
-        namespace,
-      )
+  const define = (input: unknown) =>
+    (
+      Style.define as (
+        input: Record<string, unknown>,
+        options: Style.define.Options,
+      ) => Style.Definition
+    )(
+      { style: body(input as Record<string, unknown>) },
+      { vars: options.theme },
+    ).styles[0]!
+
+  const style = (() => {
+    if (dynamic) return undefined
+    if (!Array.isArray(input)) return define(input)
+
+    // Mirrors compiled composition: each entry is one ordered declaration segment.
+    const rules: Style.Rule[] = []
+    for (const [index, entry] of (input as readonly unknown[]).entries()) {
+      if (typeof entry !== 'function') {
+        rules.push({ style: define(entry) })
+        continue
+      }
+
+      const style = Object.getOwnPropertyDescriptor(entry, data)?.value as
+        | Style.NamedStyle
+        | undefined
+      if (style) {
+        rules.push({ style })
+        continue
+      }
+
+      // Compiled callables carry only class names, so an explicit id names the composite.
+      if (id) return undefined
+
+      throw new Style.InvalidError([
+        {
+          code: 'invalid_structure',
+          message:
+            'Composition entries require literal objects or static style definitions. Compositions of compiled definitions require an explicit id, and variants and dynamic styles are applied with cx.',
+          path: [String(index)],
+        },
+      ])
+    }
+
+    return { name: 'style', declarations: [], rules } satisfies Style.NamedStyle
+  })()
+
+  const className = id ? `z-style-${id}` : Identity.style(style!, namespace)
   const props = Props.create({ className })
   const apply = (values?: style.Options & Record<string, unknown>) => {
     let result = props(values as style.Options)
@@ -124,6 +158,7 @@ export function create(
   Object.defineProperty(apply, Symbol.toPrimitive, {
     value: () => `.${className}`,
   })
+  if (style) Object.defineProperty(apply, data, { value: style })
   return apply as style.ReturnType
 }
 
