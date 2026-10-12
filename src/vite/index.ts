@@ -59,6 +59,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   const states = new WeakMap<Environment, Map<string, Entry>>()
   const removed = new WeakMap<Environment, Set<string>>()
   const reads = new WeakMap<Environment, Map<string, string>>()
+  const lookups = new WeakMap<Environment, Lookups>()
   const compilers = new WeakMap<Environment, Graph.create.ReturnType>()
   const packages = Contracts.create()
 
@@ -382,6 +383,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     event: string,
   ) {
     reads.delete(environment)
+    lookups.delete(environment)
     if (event === 'delete') {
       if (entries(environment).has(file)) {
         let files = removed.get(environment)
@@ -419,9 +421,32 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     allSources = false,
     everything = false,
   ) {
+    // Every compile visits the discovered project, so modules share lookups
+    // until the watcher reports a change. Full-project compiles look up afresh.
+    const cache = (() => {
+      const fresh: Lookups = { contracts: new Map(), resolutions: new Map() }
+      if (everything) return fresh
+
+      let value = lookups.get(entry.environment)
+      if (!value) {
+        value = fresh
+        lookups.set(entry.environment, value)
+      }
+      return value
+    })()
+
     async function resolve(source: string, importer: string) {
       if (isBuiltin(source)) return { id: source, external: true }
-      const resolved = await host.resolve(source, importer)
+
+      const key = `${importer}\0${source}`
+      let pending = cache.resolutions.get(key)
+      if (!pending) {
+        pending = host.resolve(source, importer)
+        cache.resolutions.set(key, pending)
+        pending.catch(() => cache.resolutions.delete(key))
+      }
+
+      const resolved = await pending
       if (!resolved) return resolved
 
       if (entry.environment.mode === 'dev') {
@@ -443,15 +468,41 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     const lazy: Record<string, ReadonlySet<string>> = Object.create(null)
     const modules: Record<string, string> = Object.create(null)
     const files = new Set<string>()
-    const contractHost: Contracts.read.Options = {
-      read: async (file) => {
-        const source = await snapshot(entry.environment).read(file)
-        host.watch(file)
-        files.add(file)
-        return source
-      },
-      resolve: async (specifier, importer) =>
-        (await resolve(specifier, importer))?.id.split(/[?#]/)[0],
+
+    // A package contract derives from the files it reads and the resolutions
+    // above. A cached contract still makes this compile watch those files.
+    async function readContract(file: string, required = false) {
+      const key = `${required}\0${file}`
+      let pending = cache.contracts.get(key)
+      if (!pending) {
+        const read = new Set<string>()
+
+        pending = packages
+          .read(file, {
+            read: async (path) => {
+              const source = await snapshot(entry.environment).read(path)
+              read.add(path)
+              return source
+            },
+            required,
+            resolve: async (specifier, importer) =>
+              (await resolve(specifier, importer))?.id.split(/[?#]/)[0],
+          })
+          .then((contract) => ({ contract, files: read }))
+        cache.contracts.set(key, pending)
+        pending.catch(() => cache.contracts.delete(key))
+      }
+
+      const derived = await pending
+
+      for (const path of derived.files) {
+        if (files.has(path)) continue
+
+        files.add(path)
+        host.watch(path)
+      }
+
+      return derived.contract
     }
 
     async function visit(file: string, source?: string) {
@@ -560,7 +611,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           const physical = resolved.id.split('?')[0]!.split('#')[0]!
           const contract =
             Path.isAbsolute(physical) && /\.[cm]?[jt]sx?$/.test(physical)
-              ? await packages.read(physical, contractHost)
+              ? await readContract(physical)
               : undefined
 
           if (contract !== undefined) {
@@ -695,7 +746,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           if (!Path.isAbsolute(physical) || !/\.[cm]?[jt]sx?$/.test(physical))
             continue
 
-          const contract = await packages.read(physical, contractHost)
+          const contract = await readContract(physical)
           if (contract === undefined) continue
 
           contracts[resolved.id] = contract
@@ -753,9 +804,9 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           imports[owner] ??= Object.create(null)
           imports[owner]![specifier] = target.id
 
-          contracts[target.id] ??= (await packages.read(
+          contracts[target.id] ??= (await readContract(
             target.id.split(/[?#]/)[0]!,
-            { ...contractHost, required: true },
+            true,
           ))!
 
           await dependencies(target.id)
@@ -1033,6 +1084,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   async function initializations(server: ViteDevServer) {
     const environment = server.environments.client
     reads.delete(environment)
+    lookups.delete(environment)
     const host: Host = {
       asset: async (file) => file,
       resolve: resolver(environment),
@@ -1226,6 +1278,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   return {
     buildStart() {
       reads.delete(this.environment)
+      lookups.delete(this.environment)
     },
     config: {
       order: 'post',
@@ -1745,6 +1798,14 @@ type Host = {
     id: string
   } | null>
   watch: (file: string) => void
+}
+
+type Lookups = {
+  contracts: Map<
+    string,
+    Promise<{ contract: string | undefined; files: ReadonlySet<string> }>
+  >
+  resolutions: Map<string, ReturnType<Host['resolve']>>
 }
 
 /**

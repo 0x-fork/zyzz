@@ -546,19 +546,26 @@ describe('zyzz', () => {
         path: Path.join(root, 'theme.ts'),
         source: files['theme.ts']!.replace("'red'", "'blue'"),
       })
+      // Consumer class names carry the theme value as a fallback, so the
+      // accepting entry runs again once its cards and stylesheets update.
       await page.waitForFunction(
         () =>
-          getComputedStyle(document.querySelector('#card11')!).color ===
-          'rgb(0, 0, 255)',
+          document.querySelector('#scope')!.getAttribute('data-renders') ===
+          '2',
       )
+      expect(
+        await page
+          .locator('#card11')
+          .evaluate((element) => getComputedStyle(element).color),
+      ).toMatchInlineSnapshot('"rgb(0, 0, 255)"')
       expect(
         await page
           .locator('#card0')
           .evaluate((element) => getComputedStyle(element).color),
       ).toMatchInlineSnapshot('"rgb(0, 0, 255)"')
-      expect(
-        await page.locator('#scope').getAttribute('data-renders'),
-      ).toMatchInlineSnapshot('"1"')
+      expect(await page.locator('#state').inputValue()).toMatchInlineSnapshot(
+        '"retained"',
+      )
       await Watch.write({
         path: Path.join(root, 'card0.ts'),
         source: files['card0.ts']!.replace('0.5', '0.75'),
