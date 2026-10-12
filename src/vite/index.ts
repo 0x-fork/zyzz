@@ -18,7 +18,13 @@ import * as Walker from 'oxc-walker'
 import * as Snapshot from '../node/internal/Snapshot.js'
 import * as Syntax from '../compiler/internal/Syntax.js'
 import * as Scope from '../compiler/internal/Scope.js'
-import type { Environment, Plugin, Rollup, ViteDevServer } from 'vite'
+import type {
+  DevEnvironment,
+  Environment,
+  Plugin,
+  Rollup,
+  ViteDevServer,
+} from 'vite'
 import * as Graph from '../compiler/Graph.js'
 import * as Source from '../compiler/Source.js'
 import * as ThemeRules from '../web/internal/Themes.js'
@@ -997,8 +1003,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     reads.delete(environment)
     const host: Host = {
       asset: async (file) => file,
-      resolve: (source, importer) =>
-        environment.pluginContainer.resolveId(source, importer),
+      resolve: resolver(environment),
       watch: (file) => server.watcher.add(file),
     }
     const sources = await discover(environment, host)
@@ -1370,8 +1375,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           ? await compile(
               first,
               {
-                resolve: (source, importer) =>
-                  this.environment.pluginContainer.resolveId(source, importer),
+                resolve: resolver(this.environment),
                 watch: (file) => {
                   server.watcher.add(file)
                 },
@@ -1465,7 +1469,10 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       const output = await compile(
         entry,
         {
-          resolve: (source, importer) => this.resolve(source, importer),
+          resolve:
+            this.environment.mode === 'dev'
+              ? resolver(this.environment)
+              : (source, importer) => this.resolve(source, importer),
           watch: (file) => this.addWatchFile(file),
           asset: async (file) => {
             const reference = this.emitFile({
@@ -1527,7 +1534,10 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       const output = await compile(
         entry,
         {
-          resolve: (source, importer) => this.resolve(source, importer),
+          resolve:
+            this.environment.mode === 'dev'
+              ? resolver(this.environment)
+              : (source, importer) => this.resolve(source, importer),
           watch: (file) => this.addWatchFile(file),
           asset: async (file) => {
             const reference = this.emitFile({
@@ -1629,8 +1639,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           return await documentCatalogs(
             html,
             context.filename,
-            (source, importer) =>
-              environment.pluginContainer.resolveId(source, importer),
+            resolver(environment),
             state,
           )
         })()
@@ -1664,6 +1673,24 @@ type Host = {
     id: string
   } | null>
   watch: (file: string) => void
+}
+
+// Vite forwards `scan` to `resolveId` hooks but leaves it out of its public types.
+type ScanOptions = NonNullable<
+  Parameters<DevEnvironment['pluginContainer']['resolveId']>[2]
+> & { scan: boolean }
+
+const scan: ScanOptions = { scan: true }
+
+/**
+ * Resolves imports read from source before other plugins transform their
+ * importers. Marking them as scans, as Vite's dependency scanner does, keeps the
+ * optimizer from discovering their dependencies and lets plugins tell them apart
+ * from imports that reach the module graph.
+ */
+function resolver(environment: DevEnvironment): Host['resolve'] {
+  return (source, importer) =>
+    environment.pluginContainer.resolveId(source, importer, scan)
 }
 
 const prefix = '\0zyzz:'
