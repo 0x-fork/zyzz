@@ -202,6 +202,28 @@ describe('Vite API page', () => {
     ).toMatchInlineSnapshot(`true`)
   })
 
+  test('leaves excluded modules uncompiled', async () => {
+    const config = await example('vite', 'options.exclude')
+    const { path, result } = await vite('vite-exclude', config.source, {
+      // The server bundle does not exist until a server build writes it.
+      'server.mjs': `import { createServer } from 'node:http'
+import handler from './dist/server/index.js'
+
+createServer(handler).listen(3000)
+`,
+      'src/Card.stories.ts': `import { global } from 'zyzz/web'
+
+global({ body: { color: 'rebeccapurple' } })
+`,
+    })
+
+    expect(result.status).toMatchInlineSnapshot(`0`)
+    expect(await viteCss(path)).toMatchInlineSnapshot(`
+      ".z-text-red{color:red}.z-p-8px{padding:8px}
+      "
+    `)
+  })
+
   test('compiles an included source directory', async () => {
     const config = await example('vite', 'options.include')
     const library = await directory('library', {
@@ -1532,7 +1554,7 @@ describe('integration API examples', () => {
       { cwd: root, encoding: 'utf8', timeout: 60_000 },
     )
 
-    expect(checked.length).toMatchInlineSnapshot(`35`)
+    expect(checked.length).toMatchInlineSnapshot(`36`)
     expect(result.stdout + result.stderr).toMatchInlineSnapshot(`""`)
     expect(result.status).toMatchInlineSnapshot(`0`)
   }, 120_000)

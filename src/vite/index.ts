@@ -79,8 +79,10 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   const initializers = new WeakMap<Environment, Entry>()
   const sourceEntrypoints = new Set<string>()
   const identities = new Map<string, string>()
+  const exclusions = new Map<string, boolean>()
   const lazyImports = new WeakMap<Parser.ParseResult, string[]>()
   let directories: readonly string[]
+  let filter: (id: unknown) => boolean
   let optimizeRuntime = false
   let root: string
 
@@ -158,8 +160,24 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       Path.isAbsolute(id) &&
       sourceRoot(id) !== undefined &&
       /\.[cm]?[jt]sx?$/.test(id) &&
-      !/\.(?:d|test|test-d|bench|bench-d)\.[cm]?[jt]sx?$/.test(id)
+      !/\.(?:d|test|test-d|bench|bench-d)\.[cm]?[jt]sx?$/.test(id) &&
+      !excluded(id)
     )
+  }
+
+  /** Matches excluded files inside source directories. Package files never match, so packed contracts stay readable. */
+  function excluded(id: string) {
+    const file = id.split(/[?#]/)[0]!
+    let value = exclusions.get(file)
+
+    // Vite's filter recompiles each glob per call, and every compile checks each import.
+    if (value === undefined) {
+      value =
+        Path.isAbsolute(file) && sourceRoot(file) !== undefined && !filter(file)
+      exclusions.set(file, value)
+    }
+
+    return value
   }
 
   function sourceRoot(file: string) {
@@ -531,6 +549,13 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           await visit(resolved.id)
           continue
         }
+
+        // An excluded source stays a runtime import instead of deriving a package contract.
+        if (excluded(resolved.id)) {
+          resolutions[specifier] = null
+          continue
+        }
+
         if (resolved.external || !eligible(resolved.id)) {
           const physical = resolved.id.split('?')[0]!.split('#')[0]!
           const contract =
@@ -657,7 +682,11 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
             continue
 
           const resolved = await resolve(specifier, file)
-          if (!resolved || (!resolved.external && eligible(resolved.id)))
+          if (
+            !resolved ||
+            (!resolved.external && eligible(resolved.id)) ||
+            excluded(resolved.id)
+          )
             continue
 
           if (resource(specifier) || resource(resolved.id)) continue
@@ -1297,6 +1326,14 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           }),
         )),
       ]
+
+      // Portable build adapters share this module and do not require Vite.
+      const { createFilter } = await import('vite')
+      const patterns = [...configFiles, ...(options.exclude ?? [])]
+
+      filter = createFilter(null, patterns, { resolve: root })
+      exclusions.clear()
+
       if (native) return
       const lightning = (config.css.lightningcss ??= {})
       lightning.include =
@@ -1769,6 +1806,12 @@ function resolver(environment: DevEnvironment): Host['resolve'] {
     environment.pluginContainer.resolveId(source, importer, scan)
 }
 
+// Vite and Vitest load their own configuration modules, which application code never imports.
+const configFiles = [
+  '**/vite.config.*',
+  '**/vitest.config.*',
+  '**/vitest.workspace.*',
+]
 const prefix = '\0zyzz:'
 const runtime = 'zyzz/runtime'
 const sharedId = `${prefix}shared.css`
@@ -1783,6 +1826,13 @@ export declare namespace zyzz {
   type Options = {
     /** False retains authored calls and requires explicit identities where needed. */
     readonly compiler?: boolean | undefined
+    /**
+     * Source modules left out of discovery and transforms. Globs resolve against the
+     * Vite root unless they start with `**`, and regular expressions test absolute paths.
+     * Imports of excluded modules stay runtime imports. Vite and Vitest configuration
+     * modules are always excluded.
+     */
+    readonly exclude?: readonly (RegExp | string)[] | undefined
     /** Additional source directories, absolute or relative to the Vite root. */
     readonly include?: readonly string[] | undefined
     /** Native context captured at creation. Disables CSS delivery and initialization scripts. */

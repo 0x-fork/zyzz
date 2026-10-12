@@ -1989,6 +1989,123 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
     }
   })
 
+  test('skips excluded sources and tool configuration in development and production', async () => {
+    const { config, root } = await create({
+      ...Fixture.files,
+      'card.stories.ts': `import { global } from 'zyzz/web'; global({ body: { color: 'rebeccapurple' } });`,
+      // The server bundle does not exist until a production build writes it.
+      'server.mjs': `import { createServer } from 'node:http'; import handler from './dist/server/index.js'; createServer(handler).listen(3000);`,
+      'vitest.config.ts': `import { defineConfig } from 'tool'; export default defineConfig({});`,
+    })
+    const options = {
+      ...config,
+      // Skips the entry scan but keeps runtime discovery of resolved packages.
+      optimizeDeps: { entries: [] },
+      plugins: [zyzz({ exclude: ['server.mjs', /\.stories\.ts$/] })],
+      resolve: {
+        alias: {
+          ...(config.resolve!.alias as Record<string, string>),
+          'zyzz/web': Path.resolve('src/web/index.ts'),
+        },
+      },
+    }
+
+    await Fs.mkdir(Path.join(root, 'node_modules/tool'), { recursive: true })
+    await Fs.writeFile(
+      Path.join(root, 'node_modules/tool/package.json'),
+      JSON.stringify({ exports: './index.js', name: 'tool', type: 'module' }),
+    )
+    await Fs.writeFile(
+      Path.join(root, 'node_modules/tool/index.js'),
+      'export const defineConfig = (config) => config;',
+    )
+
+    const server = await Vite.createServer(options)
+    try {
+      await server.listen()
+
+      const main = await server.transformRequest('/main.ts')
+      const shared = await server.transformRequest('\0zyzz:shared.css')
+      const metadata = server.environments.client.depsOptimizer!.metadata
+
+      expect(main!.code.includes('zyzz:shared.css')).toMatchInlineSnapshot(
+        `true`,
+      )
+      expect(shared!.code.includes('rebeccapurple')).toMatchInlineSnapshot(
+        `false`,
+      )
+      expect(
+        Object.hasOwn(
+          { ...metadata.discovered, ...metadata.optimized },
+          'tool',
+        ),
+      ).toMatchInlineSnapshot(`false`)
+
+      const stories = await server.transformRequest('/card.stories.ts')
+
+      expect(stories!.code.includes('zyzz:shared.css')).toMatchInlineSnapshot(
+        `false`,
+      )
+
+      const result = await Vite.build({ ...options, build: { write: false } })
+      const output = Array.isArray(result) ? result[0]! : result
+      if (!('output' in output)) throw new Error('Unexpected watch build')
+      const css = output.output
+        .flatMap((file) =>
+          file.type === 'asset' && file.fileName.endsWith('.css')
+            ? [String(file.source)]
+            : [],
+        )
+        .join('\n')
+
+      expect(css.includes('#06c')).toMatchInlineSnapshot(`true`)
+      expect(css.includes('rebeccapurple')).toMatchInlineSnapshot(`false`)
+    } finally {
+      await server.close()
+      await Fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('derives no contract from excluded sources that modules import', async () => {
+    const { config, root } = await create({
+      ...Fixture.files,
+      'legacy.ts': `import { global } from 'zyzz/web'; global({ body: { color: 'rebeccapurple' } }); export const legacy = 'legacy';`,
+      'main.ts': `${Fixture.files['main.ts']} import { legacy } from './legacy'; document.body.className = legacy;`,
+      // A manifest depending on Zyzz would otherwise derive a contract from the excluded module.
+      'package.json': JSON.stringify({
+        dependencies: { zyzz: '*' },
+        name: 'app',
+      }),
+    })
+    try {
+      const result = await Vite.build({
+        ...config,
+        build: { write: false },
+        plugins: [zyzz({ exclude: ['legacy.ts'] })],
+        resolve: {
+          alias: {
+            ...(config.resolve!.alias as Record<string, string>),
+            'zyzz/web': Path.resolve('src/web/index.ts'),
+          },
+        },
+      })
+      const output = Array.isArray(result) ? result[0]! : result
+      if (!('output' in output)) throw new Error('Unexpected watch build')
+      const css = output.output
+        .flatMap((file) =>
+          file.type === 'asset' && file.fileName.endsWith('.css')
+            ? [String(file.source)]
+            : [],
+        )
+        .join('\n')
+
+      expect(css.includes('#06c')).toMatchInlineSnapshot(`true`)
+      expect(css.includes('rebeccapurple')).toMatchInlineSnapshot(`false`)
+    } finally {
+      await Fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('resolves imports that framework transforms remove as development scans', async () => {
     const { config, root } = await create({
       ...Fixture.files,
