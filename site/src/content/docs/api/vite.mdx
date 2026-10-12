@@ -180,6 +180,29 @@ export default defineConfig({
 })
 ```
 
+## Dependency Optimization
+
+Compiled modules import `zyzz/runtime`, which Vite's dependency scan cannot find in authored source. The development server adds it to `optimizeDeps.include` in each environment that discovers dependencies, so serving the first compiled module does not re-run the optimizer.
+
+Environments that set `optimizeDeps.noDiscovery`, as Vite's default SSR environment does, keep their explicit lists. So do configurations that exclude `zyzz` or `zyzz/runtime`, and linked or aliased copies outside `node_modules`, which Vite serves as source. Output from `compiler: false` imports no runtime.
+
+```ts title="vite.config.ts"
+import { defineConfig } from 'vite'
+import { zyzz } from 'zyzz/vite'
+
+export default defineConfig({
+  environments: {
+    // [!code hl:5]
+    // Pre-bundles zyzz/runtime with the server's discovered dependencies
+    ssr: {
+      optimizeDeps: { noDiscovery: false },
+      resolve: { noExternal: true },
+    },
+  },
+  plugins: [zyzz()],
+})
+```
+
 ## Errors
 
 Configuration fails when a CSS target cannot preserve `light-dark()` or cannot be verified, when an `include` path is not a directory, and when `native` is combined with `reset` or `compiler: false`. Source errors keep their locations.

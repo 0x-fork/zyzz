@@ -361,6 +361,53 @@ process.exit()`,
     `)
   })
 
+  test('pre-bundles the runtime in discovering environments', async () => {
+    const config = await example('vite', 'Dependency Optimization')
+    // The package scope keeps the repository's own package from resolving zyzz.
+    const path = await directory('vite-optimize', {
+      ...viteApp,
+      'package.json': '{"private":true,"type":"module"}',
+      'vite.config.ts': config.source,
+    })
+    // Installed copies resolve the runtime inside node_modules, unlike the shared fixture link.
+    const installed = Path.join(path, 'node_modules/zyzz')
+    const packed = ChildProcess.spawnSync(
+      'npm',
+      [
+        'pack',
+        '--ignore-scripts',
+        '--offline',
+        '--json',
+        '--pack-destination',
+        path,
+      ],
+      { cwd: project, encoding: 'utf8' },
+    )
+    const archive = (JSON.parse(packed.stdout) as { filename: string }[])[0]!
+
+    await Fs.mkdir(installed, { recursive: true })
+    ChildProcess.spawnSync('tar', [
+      '-xf',
+      Path.join(path, archive.filename),
+      '-C',
+      installed,
+      '--strip-components=1',
+    ])
+
+    const result = node(path, [
+      '--input-type=module',
+      '-e',
+      "import { createServer } from 'vite'; const server = await createServer({ logLevel: 'silent' }); for (const [name, environment] of Object.entries(server.environments)) console.log(name, environment.config.optimizeDeps.include.join(',')); await server.close()",
+    ])
+
+    expect(result.status).toMatchInlineSnapshot(`0`)
+    expect(result.stdout).toMatchInlineSnapshot(`
+      "client zyzz/runtime
+      ssr zyzz/runtime
+      "
+    `)
+  })
+
   test('rejects a target that lowers light-dark()', async () => {
     const config = await example('vite', 'Errors')
     const { result } = await vite('vite-errors', config.source)
@@ -1485,7 +1532,7 @@ describe('integration API examples', () => {
       { cwd: root, encoding: 'utf8', timeout: 60_000 },
     )
 
-    expect(checked.length).toMatchInlineSnapshot(`34`)
+    expect(checked.length).toMatchInlineSnapshot(`35`)
     expect(result.stdout + result.stderr).toMatchInlineSnapshot(`""`)
     expect(result.status).toMatchInlineSnapshot(`0`)
   }, 120_000)
