@@ -1,88 +1,4 @@
-/** Names atomic declarations with readable values and scoped conflict identities. @module */
-import * as Literal from '../../internal/Literal.js'
-
-/** Creates a CSS identifier without embedding arbitrary CSS syntax. */
-export function create(options: create.Options): string {
-  const property = Object.hasOwn(aliases, options.property)
-    ? aliases[options.property]!
-    : Literal.name(options.property)
-  const condition =
-    /^&:(hover|focus|focus-visible|active|disabled)\{([^{}]+)\}$/.exec(
-      options.body,
-    )
-  const body = condition?.[2] ?? options.body
-  const prefix = `${Literal.name(options.property)}:`
-  const literal =
-    body.startsWith(prefix) && body.endsWith(';')
-      ? body.slice(prefix.length, -1)
-      : ''
-  const simple = /^[a-zA-Z0-9-]{1,24}$/.test(literal)
-  const namespace = options.namespace ? `${options.namespace}-` : ''
-  if (options.context !== undefined)
-    return `z-${namespace}${options.context}-${encode(property)}${options.slot === undefined ? '' : `-${options.slot}`}`
-
-  const value = simple ? literal : `[${literal || body}]`
-  const readable =
-    options.property === 'display' && displays.has(literal)
-      ? literal
-      : property.startsWith('--')
-        ? `[${property}:${literal || body}]`
-        : `${property}-${value}`
-  // DOM class tokens cannot contain whitespace; preserve its spelling reversibly.
-  return `z-${namespace}${condition ? `${condition[1]}-` : ''}${readable.replace(/[\s_"'<>]/gu, (character) => `_${character.codePointAt(0)!.toString(16)}_`)}`
-}
-
-/** Atomic naming inputs; context retains declaration ordering and module ownership. */
-export declare namespace create {
-  /** Serialized declaration and its optional stable slot identity. */
-  type Options = {
-    /** Complete declaration, including fallbacks and conditions. */
-    readonly body: string
-    /** Identity required when the declaration cannot share a global rule. */
-    readonly context?: string | undefined
-    /** Optional consumer-owned configuration namespace. */
-    readonly namespace?: string | undefined
-    /** Authoring property spelling. */
-    readonly property: string
-    /** Ordered declaration slot inside a contextual style. */
-    readonly slot?: number | undefined
-  }
-}
-
-const aliases: Readonly<Record<string, string>> = {
-  backgroundColor: 'bg',
-  color: 'text',
-  height: 'h',
-  margin: 'm',
-  marginBottom: 'mb',
-  marginLeft: 'ml',
-  marginRight: 'mr',
-  marginTop: 'mt',
-  opacity: 'opacity',
-  padding: 'p',
-  paddingBottom: 'pb',
-  paddingLeft: 'pl',
-  paddingRight: 'pr',
-  paddingTop: 'pt',
-  width: 'w',
-}
-
-// Flex and grid also name shorthand properties, so retain their display prefix.
-const displays = new Set([
-  'block',
-  'inline',
-  'inline-block',
-  'inline-flex',
-  'inline-grid',
-  'none',
-])
-
-function encode(value: string): string {
-  return value.replace(
-    /[^a-zA-Z0-9-]/g,
-    (character) => `_${character.charCodeAt(0).toString(16)}_`,
-  )
-}
+/** Escapes class tokens and shares unit names across a graph's compilations. @module */
 
 /** Escapes a generated class token for use as a CSS selector. */
 export function selector(value: string): string {
@@ -108,8 +24,33 @@ export const complete = Symbol('zyzz.css.complete')
 export type Units = {
   /** Names a declaration unit, reusing a visible earlier name for an equal body. */
   readonly name: (body: string, namespace: string | undefined) => string
+  /** Shared table access for compilers outside this JavaScript realm. */
+  readonly [state]?: State | undefined
   /** Names chosen so far, keyed by namespace and body, and whether each was reused. */
   readonly used: ReadonlyMap<string, Decision>
+}
+
+/** Exposes a scope's shared name table to compilers outside this JavaScript realm. */
+export const state = Symbol('zyzz.css.units.state')
+
+/** Reads and updates one scope's shared name table without naming units. */
+export type State = {
+  /** Snapshots every registered name, this scope's identity, and the owners it may borrow from. */
+  readonly read: () => Snapshot
+  /** Applies decisions made outside this realm, as if this scope had named each unit. */
+  readonly record: (used: ReadonlyMap<string, Decision>) => void
+}
+
+/** A scope's view of the shared name table. */
+export type Snapshot = {
+  /** Registered names as `[key, name, owner]`, in registration order. */
+  readonly names: readonly (readonly [string, string, string])[]
+  /** Compilation identity recorded on the names it introduces. */
+  readonly owner: string
+  /** Fixed prefix distinguishing this compilation's new names. */
+  readonly qualifier: string
+  /** Owners whose names this scope may reuse, or `undefined` for every owner. */
+  readonly visible: readonly string[] | undefined
 }
 
 /** A naming decision recorded so cached output can be validated against a later build. */
@@ -170,6 +111,32 @@ export function registry(): registry.ReturnType {
           used.set(key, { borrowed: borrowed !== undefined, name })
 
           return name
+        },
+        [state]: {
+          read() {
+            const owners = new Set([
+              options.owner,
+              ...[...names.values()].map((entry) => entry.owner),
+            ])
+
+            return {
+              names: [...names].map(
+                ([key, entry]) => [key, entry.name, entry.owner] as const,
+              ),
+              owner: options.owner,
+              qualifier: options.qualifier,
+              visible: options.visible
+                ? [...owners].filter(options.visible)
+                : undefined,
+            }
+          },
+          record(decisions) {
+            for (const [key, decision] of decisions) {
+              if (!names.has(key))
+                names.set(key, { name: decision.name, owner: options.owner })
+              used.set(key, decision)
+            }
+          },
         },
         used,
       }

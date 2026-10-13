@@ -4,8 +4,13 @@
     "bench:check": "vp test run --config bench/Check.config.ts --no-file-parallelism",
     "bench:render": "pnpm build && vp test run --config bench/Render.config.ts --no-file-parallelism",
     "bench:types": "node scripts/type-benches.ts",
-    "build": "zile && node scripts/build-default-theme.ts && node scripts/build-native-adapter.ts",
-    "changeset:publish": "zile publish:prepare && node scripts/build-default-theme.ts && node scripts/build-native-adapter.ts && changeset publish && zile publish:post",
+    "build": "pnpm build:binding && pnpm build:binding:wasi && pnpm build:package",
+    "build:binding": "node scripts/build-binding.ts && node scripts/build-wasm.ts",
+    "build:binding:test": "napi build --platform --profile binding-test --package-json-path crates/binding/package.json --manifest-path crates/binding/Cargo.toml --output-dir binding --no-js && node scripts/build-wasm.ts",
+    "build:binding:wasi": "napi build --platform --release --target wasm32-wasip1-threads --package-json-path crates/binding/package.json --manifest-path crates/binding/Cargo.toml --output-dir binding/wasi",
+    "build:package": "zile && node scripts/build-default-theme.ts && node scripts/build-native-adapter.ts",
+    "build:wasm": "node scripts/build-wasm.ts",
+    "changeset:publish": "pnpm build:binding && pnpm build:binding:wasi && zile publish:prepare && node scripts/build-default-theme.ts && node scripts/build-native-adapter.ts && changeset publish && zile publish:post",
     "changeset:version": "changeset version",
     "check": "vp check --fix",
     "check:at-rules": "node scripts/at-rule-conformance.ts && node scripts/at-rule-acceptance.ts",
@@ -17,11 +22,14 @@
     "check:css:full": "node scripts/css-conformance.ts --require-full",
     "check:native": "node scripts/native-conformance.ts --static",
     "check:native:full": "node scripts/native-conformance.ts --require-full",
+    "check:tables": "node scripts/build-rust-tables.ts --check && node scripts/build-rust-native-tables.ts --check && node scripts/build-css-syntax-tables.ts --check",
     "check:types": "tsc",
+    "check:wasi": "node scripts/check-wasi.ts",
     "dev": "pnpm build && pnpm --filter \"./examples/*\" rebuild",
     "test": "vp test",
     "update:at-rules": "node scripts/at-rule-conformance.ts --update",
     "update:css": "node scripts/css-conformance.ts --update",
+    "update:tables": "node scripts/build-rust-tables.ts && node scripts/build-rust-native-tables.ts && node scripts/build-css-syntax-tables.ts",
     "update:types": "node scripts/type-benches.ts --update"
   },
   "devDependencies": {
@@ -29,11 +37,14 @@
     "@babel/core": "catalog:",
     "@changesets/cli": "catalog:",
     "@mdn/browser-compat-data": "catalog:",
+    "@napi-rs/cli": "catalog:",
     "@pandacss/dev": "catalog:",
     "@pandacss/preset-base": "catalog:",
     "@pandacss/transformer": "catalog:",
     "@stylexjs/babel-plugin": "catalog:",
     "@stylexjs/stylex": "catalog:",
+    "@tamagui/core": "catalog:",
+    "@tamagui/static": "catalog:",
     "@types/babel__core": "catalog:",
     "@types/css-tree": "catalog:",
     "@types/node": "catalog:",
@@ -43,6 +54,7 @@
     "@vanilla-extract/esbuild-plugin": "catalog:",
     "@vitest/browser-playwright": "catalog:",
     "@vitest/coverage-v8": "catalog:",
+    "emnapi": "catalog:",
     "esbuild": "catalog:",
     "mdn-data": "catalog:",
     "next": "catalog:",
@@ -95,6 +107,10 @@
   },
   "main": "./dist/index.js",
   "files": [
+    "binding/*.node",
+    "binding/wasi/wasi-worker.mjs",
+    "binding/wasi/zyzz.wasi.cjs",
+    "binding/wasi/zyzz.wasm32-wasi.wasm",
     "dist",
     "src",
     "native",
@@ -125,6 +141,11 @@
   },
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "browser": {
+    "./dist/web/internal/Engine.js": "./dist/web/internal/Engine.browser.js",
+    "./src/web/internal/Engine.js": "./src/web/internal/Engine.browser.ts",
+    "./src/web/internal/Engine.ts": "./src/web/internal/Engine.browser.ts"
+  },
   "exports": {
     ".": {
       "src": "./src/index.ts",
@@ -239,9 +260,19 @@
       "default": "./dist/webpack/index.js"
     }
   },
+  "imports": {
+    "#wasm": {
+      "types": "./src/web/internal/Wasm.generated.ts",
+      "src": "./src/web/internal/Wasm.generated.ts",
+      "default": "./dist/web/internal/Wasm.generated.js"
+    }
+  },
   "dependencies": {
+    "@emnapi/core": "catalog:",
+    "@emnapi/runtime": "catalog:",
     "@jridgewell/gen-mapping": "catalog:",
     "@jridgewell/trace-mapping": "catalog:",
+    "@napi-rs/wasm-runtime": "catalog:",
     "@oxc-project/types": "catalog:",
     "@oxlint/plugins": "catalog:",
     "css-tree": "catalog:",

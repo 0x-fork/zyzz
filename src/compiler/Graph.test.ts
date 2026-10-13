@@ -685,12 +685,13 @@ export const nested=style({color:fields.foo.bar,vars:{[fields['foo-bar']]:'red',
     }
   })
 
-  test('releases native parser trees while retaining lazy source maps', async () => {
+  test('releases native graph inputs while retaining source maps', async () => {
     const directory = await Fs.mkdtemp(
       Path.resolve('.fixture-native-retention-'),
     )
     try {
-      const outfile = Path.join(directory, 'retention.mjs')
+      // The bundle sits two levels below the root, as source modules do, so it finds the addon.
+      const outfile = Path.join(directory, 'dist', 'retention.mjs')
       await Esbuild.build({
         bundle: true,
         entryPoints: [
@@ -2683,7 +2684,7 @@ describe('create', () => {
       `)
   })
 
-  test('unimported compatible scope edits invalidate consumer CSS', () => {
+  test('unimported compatible scope edits keep unchanged consumer output', () => {
     const compiler = Graph.create()
     const sources = {
       ...modules,
@@ -2703,7 +2704,7 @@ describe('create', () => {
 
     expect(
       after.modules['pkg/card.ts'] === before.modules['pkg/card.ts'],
-    ).toMatchInlineSnapshot(`false`)
+    ).toMatchInlineSnapshot(`true`)
     expect(after.dependencies['pkg/card.ts']).toMatchInlineSnapshot(`
       [
         "pkg/theme.ts",

@@ -1,9 +1,40 @@
 /**
- * Gates matched compiler workloads on build time and total gzip delivery.
+ * Gates matched compiler workloads on build time and total gzip delivery, and records the
+ * validated measurements for the pull request comment.
  * @module
  */
 import * as Fs from 'node:fs'
 import * as Path from 'node:path'
+
+/** Validated framework measurements, written to `frameworks.json` for the pull request comment. */
+export type Summary = {
+  /** Matched workloads in report order. */
+  readonly workloads: readonly {
+    /** Competitor libraries, in column order. */
+    readonly competitors: readonly string[]
+    /** Zyzz lanes. The last lane does the most work and represents Zyzz in the comment. */
+    readonly lanes: readonly string[]
+    /** Whether every Zyzz lane passed the gate. */
+    readonly passed: boolean
+    /** Every lane's measurements, or none when any measurement was missing or invalid. */
+    readonly results: readonly {
+      /** CSS gzip bytes. */
+      readonly css: number
+      /** Client JavaScript gzip bytes. */
+      readonly javascript: number
+      /** Benchmark lane name. */
+      readonly library: string
+      /** Mean compile time in milliseconds. */
+      readonly mean: number
+      /** Display name. */
+      readonly name: string
+      /** CSS plus JavaScript gzip bytes. */
+      readonly total: number
+    }[]
+    /** Display title. */
+    readonly title: string
+  }[]
+}
 
 type Report = {
   readonly files: readonly {
@@ -46,7 +77,13 @@ const report: Report = JSON.parse(
   Fs.readFileSync(Path.join(directory, 'timings.json'), 'utf8'),
 )
 const groups = report.files.flatMap((file) => file.groups)
-const competitors = ['panda', 'stylex', 'tailwind', 'vanilla-extract']
+const competitors = [
+  'panda',
+  'stylex',
+  'tailwind',
+  'tamagui',
+  'vanilla-extract',
+]
 const workloads = [
   ...[
     'small',
@@ -58,16 +95,19 @@ const workloads = [
     'sparse',
     'components',
   ].map((name) => ({
+    competitors,
     directory: name,
     group: `fresh compilation / ${name}`,
     lanes: ['zyzz'],
   })),
   {
+    competitors,
     directory: 'app',
     group: 'fresh compilation / app',
     lanes: ['zyzz-source'],
   },
   ...[10, 100].map((count) => ({
+    competitors,
     directory: `theme-comparison/${count}`,
     group: `theme comparison / ${count} styles`,
     lanes: ['zyzz', 'zyzz-tokens'],
@@ -81,6 +121,7 @@ const names: Record<string, string> = {
   panda: 'Panda CSS',
   stylex: 'StyleX',
   tailwind: 'Tailwind',
+  tamagui: 'Tamagui',
   'vanilla-extract': 'vanilla-extract',
   zyzz: 'Zyzz',
   'zyzz-source': 'Zyzz (source transform)',
@@ -88,17 +129,18 @@ const names: Record<string, string> = {
 }
 const titles: Record<string, string> = {
   small: '3 Components',
-  repeated: '1,000 Components — Repeated Styles',
-  unique: '1,000 Components — Unique Padding',
-  partial: '100 Components — Partial Sharing',
-  palette: '100 Components — Reused Palette',
-  independent: '100 Components — Independent Values',
-  sparse: '100 Components — Sparse Properties',
-  components: '60 Components — Mixed Shapes',
-  app: '300 Components — Application Scale',
-  'theme-comparison/10': 'Themes — 10 Components',
-  'theme-comparison/100': 'Themes — 100 Components',
+  repeated: '1,000 Components: Repeated Styles',
+  unique: '1,000 Components: Unique Padding',
+  partial: '100 Components: Partial Sharing',
+  palette: '100 Components: Reused Palette',
+  independent: '100 Components: Independent Values',
+  sparse: '100 Components: Sparse Properties',
+  components: '60 Components: Mixed Shapes',
+  app: '300 Components: Application Scale',
+  'theme-comparison/10': 'Themes: 10 Components',
+  'theme-comparison/100': 'Themes: 100 Components',
 }
+const recorded: Summary['workloads'][number][] = []
 
 console.log('## Framework Comparisons\n')
 console.log(
@@ -126,7 +168,7 @@ for (const workload of workloads) {
       { mean: number; size: number; sizes: Sizes; timing: Timing }
     >()
 
-    for (const library of [...workload.lanes, ...competitors]) {
+    for (const library of [...workload.lanes, ...workload.competitors]) {
       const timings = matches[0]!.benchmarks.filter(
         (entry) => entry.name === library,
       )
@@ -184,6 +226,8 @@ for (const workload of workloads) {
     console.log('| Framework | Build (ms) | CSS gzip | JS gzip | Total gzip |')
     console.log('| --- | ---: | ---: | ---: | ---: |')
 
+    let passed = true
+
     for (const [library, result] of measurements) {
       const status = (() => {
         if (!workload.lanes.includes(library)) {
@@ -201,14 +245,17 @@ for (const workload of workloads) {
 
         const faster =
           untimed.has(library) ||
-          competitors.every(
+          workload.competitors.every(
             (name) => result.mean < measurements.get(name)!.mean,
           )
-        const smaller = competitors.every(
+        const smaller = workload.competitors.every(
           (name) => result.size < measurements.get(name)!.size,
         )
 
-        if (!faster || !smaller) process.exitCode = 1
+        if (!faster || !smaller) {
+          passed = false
+          process.exitCode = 1
+        }
 
         return faster && smaller ? '🟢 ' : '🔴 '
       })()
@@ -235,14 +282,42 @@ for (const workload of workloads) {
     }
 
     console.log('\n</details>\n')
+
+    recorded.push({
+      competitors: workload.competitors,
+      lanes: workload.lanes,
+      passed,
+      results: [...measurements].map(([library, result]) => ({
+        css: result.sizes.css.gzip,
+        javascript: result.sizes.javascript.gzip,
+        library,
+        mean: result.mean,
+        name: names[library]!,
+        total: result.size,
+      })),
+      title: titles[workload.directory]!,
+    })
   } catch (error) {
     process.exitCode = 1
     console.log(
       `🔴 ${titles[workload.directory]}: Missing or invalid measurements. See workflow logs.\n`,
     )
     console.error(`${workload.directory}:`, error)
+
+    recorded.push({
+      competitors: workload.competitors,
+      lanes: workload.lanes,
+      passed: false,
+      results: [],
+      title: titles[workload.directory]!,
+    })
   }
 }
+
+Fs.writeFileSync(
+  Path.join(directory, 'frameworks.json'),
+  `${JSON.stringify({ workloads: recorded } satisfies Summary, null, 2)}\n`,
+)
 
 /** Returns the lowest measured time and its ratio against the runner-up. */
 function winner(options: winner.Options): string {

@@ -60,6 +60,10 @@ jobs:
         uses: actions/checkout@v4
       - name: Install candidate dependencies
         uses: ./.github/actions/install-dependencies
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Measure candidate
         run: |
           pnpm build
@@ -93,6 +97,10 @@ jobs:
         uses: actions/checkout@v4
       - name: Install dependencies
         uses: ./.github/actions/install-dependencies
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install browser
         run: pnpm exec playwright install --with-deps --only-shell chromium
       - name: Build package
@@ -155,6 +163,10 @@ jobs:
       - name: Install dependencies
         id: dependencies
         uses: ./.github/actions/install-dependencies
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Record benchmark environment
         run: |
           mkdir -p bench/results
@@ -165,7 +177,12 @@ jobs:
           node --version > bench/results/node.txt
           pnpm --version > bench/results/pnpm.txt
           uname -a > bench/results/platform.txt
+      # Competitor comparisons time the addon a release ships, not the test build.
+      - name: Build release addon
+        run: pnpm build:binding
       - name: Run benchmarks
+        env:
+          ZYZZ_BINDING: prebuilt
         run: pnpm exec vp test bench --run --no-file-parallelism --outputJson bench/results/timings.json
       - name: Summarize benchmarks
         run: |
@@ -297,7 +314,7 @@ jobs:
           name: benchmarks
           path: bench/results/
           retention-days: 30
-    timeout-minutes: 50
+    timeout-minutes: 60
   benchmarks:
     name: Benchmarks
     if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action != 'closed' }}
@@ -330,6 +347,10 @@ jobs:
       - name: Install dependencies
         id: dependencies
         uses: ./.github/actions/install-dependencies
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Record render environment
         run: |
           mkdir -p bench/results/render-environment
@@ -395,7 +416,7 @@ jobs:
   report:
     name: Benchmark Report
     if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.action != 'closed' }}
-    needs: [compiler, renders]
+    needs: [compiler]
     permissions:
       actions: read
       contents: read
@@ -414,16 +435,10 @@ jobs:
         with:
           name: benchmarks
           path: reports/benchmarks
-      - name: Download render results
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: benchmarks-render
-          path: reports/benchmarks
       - name: Prepare comment
         run: |
           mkdir -p reports
-          node bench/Comment.ts reports/benchmarks/report.md reports/benchmarks/render.md > reports/comment.md
+          node bench/Comment.ts reports/benchmarks "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > reports/comment.md
           cat reports/comment.md >> "$GITHUB_STEP_SUMMARY"
       - name: Comment benchmark results
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
