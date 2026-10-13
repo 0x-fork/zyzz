@@ -81,9 +81,22 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   const initializers = new WeakMap<Environment, Entry>()
   const sharedSheets = new WeakMap<
     Environment,
-    { css: string; inputs: Set<string> }
+    { contributors: Set<string>; css: string; inputs: Set<string> }
   >()
   const sharedFailures = new WeakSet<Environment>()
+  // Per source file, the modules that read its exports with the names they read,
+  // and the export signatures those readers last compiled against.
+  const readers = new WeakMap<
+    Environment,
+    Map<string, Map<string, readonly string[]>>
+  >()
+  const reading = new WeakMap<Environment, Map<string, Set<string>>>()
+  // Whether a source text contributes to shared stylesheets, from any environment.
+  const contributing = new Map<string, { source: string; value: boolean }>()
+  const signatures = new WeakMap<
+    Environment,
+    Map<string, Map<string, string>>
+  >()
   const sourceEntrypoints = new Set<string>()
   const identities = new Map<string, string>()
   const exclusions = new Map<string, boolean>()
@@ -199,6 +212,18 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     }
 
     return value
+  }
+
+  /** Maps graph identities in source map sources back to files. */
+  function located<
+    Map extends { readonly sources: readonly (string | null)[] },
+  >(map: Map): Map {
+    return {
+      ...map,
+      sources: map.sources.map((source) =>
+        source === null ? null : (sourceFile(source) ?? source),
+      ),
+    }
   }
 
   function sourceRoot(file: string) {
@@ -403,7 +428,9 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     event: string,
   ) {
     reads.delete(environment)
-    lookups.delete(environment)
+    // Editing a source module's content changes no resolution or package contract.
+    if (event !== 'update' || !eligible(file)) lookups.delete(environment)
+    for (const entry of entries(environment).values()) delete entry.prepared
     if (event === 'delete') {
       if (entries(environment).has(file)) {
         let files = removed.get(environment)
@@ -458,6 +485,8 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     everything = false,
     // Further module compiles that share this graph, with their transform inputs.
     roots: readonly { file: string; code?: string | undefined }[] = [],
+    // Export names of the entry whose signatures the caller compares.
+    exported: readonly string[] = [],
   ) {
     // Every compile visits the discovered project, so modules share lookups
     // until the watcher reports a change. Full-project compiles look up afresh.
@@ -887,6 +916,9 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
               entry.file,
               ...roots.map((root) => root.file),
             ].map(sourceId),
+            ...(exported.length
+              ? { [Stylesheets.surfaces]: { [sourceId(entry.file)]: exported } }
+              : {}),
           }),
       [Syntax.cache]: snapshot(entry.environment).programs(modules),
       compiler: options.compiler,
@@ -917,7 +949,51 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
 
     entry.inputs = inputs([sourceId(entry.file)])
     const inputsOf = (file: string) => inputs([sourceId(file)])
+
+    const environment = entry.environment
+    const byTarget = readers.get(environment) ?? new Map()
+    const byReader = reading.get(environment) ?? new Map()
+    readers.set(environment, byTarget)
+    reading.set(environment, byReader)
+    for (const [reader, targets] of Object.entries(
+      result[Stylesheets.bindings] ?? {},
+    )) {
+      const file = sourceFile(reader)
+      if (!file) continue
+
+      for (const target of byReader.get(file) ?? [])
+        byTarget.get(target)?.delete(file)
+      const sources = new Set<string>()
+      for (const [target, names] of Object.entries(targets)) {
+        const source = sourceFile(target)
+        if (!source) continue
+
+        sources.add(source)
+        const bound = byTarget.get(source) ?? new Map()
+        bound.set(file, names)
+        byTarget.set(source, bound)
+      }
+      byReader.set(file, sources)
+    }
+    const signed = signatures.get(environment) ?? new Map()
+    signatures.set(environment, signed)
+    const surfaces = result[Stylesheets.surfaces] ?? {}
+    for (const [target, names] of Object.entries(surfaces)) {
+      const file = sourceFile(target)
+      if (!file) continue
+
+      const map = signed.get(file) ?? new Map()
+      for (const [name, signature] of Object.entries(names))
+        map.set(name, signature)
+      signed.set(file, map)
+    }
+    const signaturesOf = (file: string) => surfaces[sourceId(file)]
     const contributors = result[Stylesheets.contributors] ?? []
+    for (const [id, source] of Object.entries(modules)) {
+      const file = sourceFile(id)
+      if (file)
+        contributing.set(file, { source, value: contributors.includes(id) })
+    }
     const sharedSources = {
       contributors: new Set(contributors.map((id) => sourceFile(id) ?? id)),
       inputs: inputs(contributors),
@@ -936,6 +1012,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         configurations: new Map<string, Catalogs.Catalog>(),
         inputsOf,
         sharedSources,
+        signaturesOf,
         connections: staged,
         css: '',
         sharedCss: '',
@@ -1141,22 +1218,13 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       configurations,
       inputsOf,
       sharedSources,
+      signaturesOf,
       connections: staged,
       css: output.css,
       sharedCss: new TextDecoder().decode(shared.code),
       sharedCssMap: sharedMap,
-      cssMap: {
-        ...output.cssMap,
-        sources: output.cssMap.sources.map((source) =>
-          source === null ? null : (sourceFile(source) ?? source),
-        ),
-      },
-      map: {
-        ...output.map,
-        sources: output.map.sources.map((source) =>
-          source === null ? null : (sourceFile(source) ?? source),
-        ),
-      },
+      cssMap: located(output.cssMap),
+      map: located(output.map),
     }
   }
 
@@ -1571,13 +1639,17 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       await updateDiscovery(environment, file, type)
 
       // A failed compile never recorded the inputs it could not resolve.
-      const owners = [...state.values()].filter(
+      const candidates = [...state.values()].filter(
         (entry) =>
           (entry.inputs ?? entry.files).has(file) ||
           (entry.failed && (type === 'create' || entry.files.has(file))),
       )
       const candidate = contributed || contributions?.has(file)
-      if (!owners.length && !candidate && !removed.get(environment)?.has(file))
+      if (
+        !candidates.length &&
+        !candidate &&
+        !removed.get(environment)?.has(file)
+      )
         return modules
 
       const host: Host = {
@@ -1590,23 +1662,113 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       // Portable build adapters share this module and do not require Vite.
       const { transformWithOxc } = await import('vite')
 
+      const sheet = sharedSheets.get(environment)
+      // Clients cache failed requests, so modules that failed reload either way.
+      const failures = new Map(candidates.map((entry) => [entry, entry.failed]))
+
+      // Recompiling the edited file alone reveals which exports its readers use
+      // changed, and whether its own shared contributions did.
+      const edit = await (async () => {
+        if (type !== 'update') return undefined
+
+        const known = new Map(readers.get(environment)?.get(file))
+        const before = new Map(signatures.get(environment)?.get(file))
+        if (!known.size && !sheet?.contributors.has(file) && !candidate)
+          return { affected: new Set([file]), shares: false }
+
+        // Another environment may have compiled this source already.
+        const listed = !!sheet?.contributors.has(file)
+        const cached = contributing.get(file)
+        if (
+          cached &&
+          !known.size &&
+          !state.has(file) &&
+          (!cached.value || !listed)
+        ) {
+          const source = await snapshot(environment)
+            .read(file)
+            .catch(() => undefined)
+          if (cached.source === source)
+            return {
+              affected: new Set([file]),
+              shares: cached.value !== listed,
+            }
+        }
+
+        const names = [
+          ...new Set([...known.values()].flat()),
+          Stylesheets.shares,
+        ]
+        const own = state.get(file) ?? {
+          compiler: compiler(environment),
+          environment,
+          file,
+          files: new Set([file]),
+        }
+        const output = await compile(
+          own,
+          host,
+          undefined,
+          false,
+          false,
+          [],
+          names,
+        ).catch(() => undefined)
+        const after = output?.signaturesOf(file)
+        if (!after) return undefined
+
+        const changed = new Set(
+          names.filter(
+            (name) => !before.has(name) || before.get(name) !== after[name],
+          ),
+        )
+        // Readers of changed exports, and in turn the modules reading theirs.
+        const affected = new Set([file])
+        const pending = [...known]
+          .filter(([, read]) => read.some((name) => changed.has(name)))
+          .map(([reader]) => reader)
+        while (pending.length) {
+          const reader = pending.pop()!
+          if (affected.has(reader)) continue
+
+          affected.add(reader)
+          pending.push(...(readers.get(environment)?.get(reader)?.keys() ?? []))
+        }
+
+        return {
+          affected,
+          output,
+          own,
+          shares: changed.has(Stylesheets.shares),
+        }
+      })()
+      const owners = edit
+        ? candidates.filter(
+            (entry) => edit.affected.has(entry.file) || entry.failed,
+          )
+        : candidates
+
       // Recompile every owner in one graph from the input its last transform
       // received, and compare with what that transform and stylesheet load produced.
       const [anchor, ...rest] = owners
       const input = (entry: Entry) =>
         entry.file === file ? undefined : entry.input
-      // Clients cache failed requests, so modules that failed reload either way.
-      const failures = new Map(owners.map((entry) => [entry, entry.failed]))
-      const output = anchor
-        ? await compile(
-            anchor,
-            host,
-            input(anchor),
-            false,
-            false,
-            rest.map((entry) => ({ file: entry.file, code: input(entry) })),
-          ).catch(() => undefined)
-        : undefined
+      const reused =
+        owners.length === 1 && edit && 'own' in edit && anchor === edit.own
+          ? edit.output
+          : undefined
+      const output = reused
+        ? reused
+        : anchor
+          ? await compile(
+              anchor,
+              host,
+              input(anchor),
+              false,
+              false,
+              rest.map((entry) => ({ file: entry.file, code: input(entry) })),
+            ).catch(() => undefined)
+          : undefined
       const changes = await Promise.all(
         owners.map(async (entry) => {
           const id = sourceId(entry.file)
@@ -1639,10 +1801,40 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         }),
       )
 
+      // Clients request changed modules next, so they reuse this compile's output.
+      if (output)
+        for (const entry of owners) {
+          const id = sourceId(entry.file)
+          const module = output.modules[id]
+          const input =
+            entry.file === file
+              ? await snapshot(environment)
+                  .read(file)
+                  .catch(() => undefined)
+              : entry.input
+          if (!module || input === undefined) continue
+
+          entry.prepared = {
+            code: module.code,
+            css: module.css,
+            cssMap: located(module.cssMap),
+            imports: JSON.stringify(output.imports[id]),
+            input,
+            map: located(module.map),
+          }
+        }
+
       // Shared stylesheets render global contributions and theme definitions.
-      const sheet = sharedSheets.get(environment)
       const first = state.values().next().value
       async function contributes() {
+        if (edit)
+          return (
+            edit.shares ||
+            // Its own contributions are signed; affected readers may contribute too.
+            [...edit.affected].some(
+              (reader) => reader !== file && sheet?.contributors.has(reader),
+            )
+          )
         if (sheet?.inputs.has(file)) return true
         if (output?.sharedSources.contributors.has(file)) return true
         // A file no module compile reads contributes only through its own calls.
@@ -1727,6 +1919,12 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       if (!entry && file && removed.get(this.environment)?.has(file)) return ''
       if (!entry) throw new Error(`Unknown Zyzz stylesheet: ${file}`)
 
+      const prepared = id === sharedId ? undefined : entry.prepared
+      if (prepared) {
+        entry.css = prepared.css
+        return { code: prepared.css, map: JSON.stringify(prepared.cssMap) }
+      }
+
       // A failed load leaves no served stylesheet, so the next edit reloads it.
       if (id === sharedId) {
         sharedSheets.delete(this.environment)
@@ -1770,6 +1968,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           : css
       if (id === sharedId) {
         sharedSheets.set(this.environment, {
+          contributors: output.sharedSources.contributors,
           css: output.sharedCss,
           inputs: output.sharedSources.inputs,
         })
@@ -1807,29 +2006,38 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       }
       entry.input = code
 
-      const output = await compile(
-        entry,
-        {
-          resolve:
-            this.environment.mode === 'dev'
-              ? resolver(this.environment)
-              : (source, importer) => this.resolve(source, importer),
-          watch: watcher(this),
-          asset: async (file) => {
-            const reference = this.emitFile({
-              type: 'asset',
-              name: Path.basename(file).replace(/[?#%]/g, '_'),
-              source: await Fs.readFile(file),
-            })
+      // An edit already compiled this module from the same input.
+      const owner = entry
+      const output: Pick<Prepared, 'code' | 'imports' | 'map'> =
+        entry.prepared?.input === code
+          ? entry.prepared
+          : await compile(
+              owner,
+              {
+                resolve:
+                  this.environment.mode === 'dev'
+                    ? resolver(this.environment)
+                    : (source, importer) => this.resolve(source, importer),
+                watch: watcher(this),
+                asset: async (file) => {
+                  const reference = this.emitFile({
+                    type: 'asset',
+                    name: Path.basename(file).replace(/[?#%]/g, '_'),
+                    source: await Fs.readFile(file),
+                  })
 
-            // Vite's CSS asset placeholder preserves its configured base and output naming.
-            return `__VITE_ASSET__${reference}__`
-          },
-        },
-        code,
-      )
+                  // Vite's CSS asset placeholder preserves its configured base and output naming.
+                  return `__VITE_ASSET__${reference}__`
+                },
+              },
+              code,
+            ).then((compiled) => ({
+              code: compiled.code,
+              imports: JSON.stringify(compiled.imports[sourceId(owner.file)]),
+              map: compiled.map,
+            }))
 
-      entry.imports = JSON.stringify(output.imports[sourceId(entry.file)])
+      entry.imports = output.imports
       entry.code = output.code
 
       if (native) return { code: output.code, map: JSON.stringify(output.map) }
@@ -1940,10 +2148,21 @@ type Entry = {
   input?: string
   /** Files whose content the module's compiled output reads. */
   inputs?: Set<string>
+  /** Output an edit compiled, served until the next file change. */
+  prepared?: Prepared
   environment: Environment
   compiler: Graph.create.ReturnType
   file: string
   files: Set<string>
+}
+
+type Prepared = {
+  code: string
+  css: string
+  cssMap: Mapping.EncodedSourceMap
+  imports: string
+  input: string
+  map: Mapping.EncodedSourceMap
 }
 
 type Host = {

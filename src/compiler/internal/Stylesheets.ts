@@ -29,6 +29,15 @@ export const reset = Symbol('reset stylesheet')
 /** Static dependencies whose exports each module's output reads, for hosts that update modules separately. */
 export const reads = Symbol('read dependencies')
 
+/** Per module and read dependency, the export names its output reads; `*` reads all. */
+export const bindings = Symbol('read bindings')
+
+/** Signatures of read exports, which change whenever a reader's output can. */
+export const surfaces = Symbol('read export signatures')
+
+/** Surface name signing a module's own shared contributions and theme definitions. */
+export const shares = '\0shares'
+
 /** Modules whose global contributions or theme definitions render into shared stylesheets. */
 export const contributors = Symbol('shared contributors')
 

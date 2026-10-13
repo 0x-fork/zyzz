@@ -48,6 +48,10 @@ export declare namespace compile {
     readonly [Stylesheets.entry]?: string | undefined
     /** Modules the host emits; shared stylesheets render only without targets. */
     readonly [Stylesheets.targets]?: readonly string[] | undefined
+    /** Export names whose signatures the host compares across edits, per module. */
+    readonly [Stylesheets.surfaces]?:
+      | Readonly<Record<string, readonly string[]>>
+      | undefined
     /** Lets modules reuse shared rule names from unrelated modules of this one graph. */
     readonly [ClassName.complete]?: boolean | undefined
     /** Host syntax from the same immutable source snapshot. */
@@ -87,6 +91,14 @@ export declare namespace compile {
     readonly [Stylesheets.packed]?: readonly Stylesheets.Resource[]
     /** Per module, the static dependencies whose exports its output reads. */
     readonly [Stylesheets.reads]?: Readonly<Record<string, readonly string[]>>
+    /** Per module and read dependency, the export names its output reads. */
+    readonly [Stylesheets.bindings]?: Readonly<
+      Record<string, Readonly<Record<string, readonly string[]>>>
+    >
+    /** Per source module, signatures of the exports targets read or the host requested. */
+    readonly [Stylesheets.surfaces]?: Readonly<
+      Record<string, Readonly<Record<string, string>>>
+    >
     /** Modules whose contributions or theme definitions render into shared stylesheets. */
     readonly [Stylesheets.contributors]?: readonly string[]
     /** Independently loaded reset for module-based hosts. */
@@ -134,7 +146,7 @@ export declare namespace create {
 
 type Extraction = {
   dependencies: readonly string[]
-  reads: readonly string[]
+  bindings: Readonly<Record<string, readonly string[]>>
   extracted: Source.extract.ReturnType
   inputs: ReadonlyMap<
     string,
@@ -287,6 +299,10 @@ function build(options: compile.Options, cache?: Cache): Cache {
   const transformed = new Map(previous?.transformed)
   const dependencies: Record<string, readonly string[]> = Object.create(null)
   const reads: Record<string, readonly string[]> = Object.create(null)
+  const bindings: Record<
+    string,
+    Readonly<Record<string, readonly string[]>>
+  > = Object.create(null)
   const extracted = new Map<string, Source.extract.ReturnType>()
   const identifiers = new Map<string, Set<string>>()
   const owners: Record<string, NonNullable<Themes.Context['owners']>[string]> =
@@ -686,7 +702,7 @@ function build(options: compile.Options, cache?: Cache): Cache {
       (previous && Object.hasOwn(previous.sources, moduleId)
         ? {
             dependencies: previous.result.dependencies[moduleId]!,
-            reads: previous.result[Stylesheets.reads]?.[moduleId] ?? [],
+            bindings: previous.result[Stylesheets.bindings]?.[moduleId] ?? {},
             extracted: previous.extracted.get(moduleId)!,
             inputs: new Map(
               previous.result.dependencies[moduleId]!.map((target) => [
@@ -713,7 +729,7 @@ function build(options: compile.Options, cache?: Cache): Cache {
         moduleId,
         snapshot.extracted,
         snapshot.dependencies,
-        snapshot.reads,
+        snapshot.bindings,
       )
     }
 
@@ -751,8 +767,13 @@ function build(options: compile.Options, cache?: Cache): Cache {
     const explicit = new Set<string>()
     const stars: Readonly<Record<string, Themes.Link>>[] = []
     const imports = new Set<string>()
-    // Imports whose links, constants, or factories this module's output reads.
-    const used = new Set<string>()
+    // Names of imports whose links, constants, or factories this module's output reads.
+    const used = new Map<string, Set<string>>()
+    const use = (target: string, name: string) => {
+      const names = used.get(target) ?? new Set()
+      names.add(name)
+      used.set(target, names)
+    }
 
     function exportedBindings(node: Ast.Node) {
       if (node.type === 'Identifier') explicit.add(node.name)
@@ -858,7 +879,7 @@ function build(options: compile.Options, cache?: Cache): Cache {
             const link = namespace(specifier.local.name)
             if (link) {
               links[specifier.local.name] = link
-              used.add(target)
+              use(target, '*')
             }
             continue
           }
@@ -883,12 +904,12 @@ function build(options: compile.Options, cache?: Cache): Cache {
 
           if (Object.hasOwn(contracts, name)) {
             links[specifier.local.name] = contracts[name]!
-            used.add(target)
+            use(target, name)
           } else {
             const value = constant(target, name)
             if (value) {
               values[specifier.local.name] = relocate(value, specifier)
-              used.add(target)
+              use(target, name)
             }
           }
         }
@@ -912,11 +933,12 @@ function build(options: compile.Options, cache?: Cache): Cache {
           const link = namespace(name)
           if (link) {
             forwarded[name] = link
-            used.add(target)
+            use(target, '*')
           }
         } else {
           stars.push(contracts)
-          if (Object.keys(contracts).length) used.add(target)
+          // Re-exports forward constants that readers inline.
+          use(target, '*')
         }
       } else {
         for (const specifier of node.specifiers) {
@@ -932,11 +954,10 @@ function build(options: compile.Options, cache?: Cache): Cache {
               : specifier.exported.value
 
           explicit.add(exported)
+          use(target, name)
 
-          if (Object.hasOwn(contracts, name)) {
+          if (Object.hasOwn(contracts, name))
             forwarded[exported] = contracts[name]!
-            used.add(target)
-          }
         }
       }
     }
@@ -968,7 +989,7 @@ function build(options: compile.Options, cache?: Cache): Cache {
         const found = factory(target, name)
         if (found) {
           factories[specifier.local.name] = found
-          used.add(target)
+          use(target, name)
         }
       }
     }
@@ -1047,7 +1068,14 @@ function build(options: compile.Options, cache?: Cache): Cache {
       moduleId,
       linked,
       Object.freeze([...imports]),
-      Object.freeze([...used]),
+      Object.freeze(
+        Object.fromEntries(
+          [...used].map(([target, names]) => [
+            target,
+            Object.freeze([...names]),
+          ]),
+        ),
+      ),
     )
   }
 
@@ -1055,7 +1083,7 @@ function build(options: compile.Options, cache?: Cache): Cache {
     moduleId: string,
     result: Source.extract.ReturnType,
     imports: readonly string[],
-    used: readonly string[],
+    used: Readonly<Record<string, readonly string[]>>,
   ): Source.extract.ReturnType {
     for (const call of result.variableCalls ?? [])
       for (const slot of Object.values(call.slots)) {
@@ -1081,11 +1109,12 @@ function build(options: compile.Options, cache?: Cache): Cache {
 
     extracted.set(moduleId, result)
     dependencies[moduleId] = imports
-    reads[moduleId] = used
+    reads[moduleId] = Object.keys(used)
+    bindings[moduleId] = used
     retained.delete(moduleId)
     retained.set(moduleId, {
       dependencies: imports,
-      reads: used,
+      bindings: used,
       extracted: result,
       inputs: new Map(
         imports.map((target) => [
@@ -1123,7 +1152,10 @@ function build(options: compile.Options, cache?: Cache): Cache {
     if (!targets) return undefined
 
     const found = new Set<string>()
-    const pending = [...targets]
+    const pending = [
+      ...targets,
+      ...Object.keys(options[Stylesheets.surfaces] ?? {}),
+    ]
 
     while (pending.length) {
       const id = pending.pop()!
@@ -1393,6 +1425,7 @@ function build(options: compile.Options, cache?: Cache): Cache {
         ),
         dependencies: Object.freeze(dependencies),
         [Stylesheets.reads]: Object.freeze(reads),
+        [Stylesheets.bindings]: Object.freeze(bindings),
         [Stylesheets.contributors]: contributors,
         modules: Object.freeze(modules),
       }),
@@ -1933,6 +1966,119 @@ function build(options: compile.Options, cache?: Cache): Cache {
     )
   }
 
+  // Signatures cover what readers consume: published links with their themes,
+  // literal constants, and factories.
+  function signature(target: string, name: string) {
+    const module = extracted.get(target)!
+    if (name === Stylesheets.shares)
+      return JSON.stringify([
+        (sections.get(target) ?? []).map((section) => [
+          section.key,
+          section.css,
+          section.layers,
+        ]),
+        Contract.write(
+          {},
+          Object.fromEntries(
+            module.themeCalls.flatMap((call) =>
+              sharedThemes[call.name]
+                ? [[call.name, sharedThemes[call.name]!]]
+                : [],
+            ),
+          ),
+        ),
+      ])
+
+    const exports = module.themeExports ?? {}
+    const links =
+      name === '*'
+        ? exports
+        : Object.hasOwn(exports, name)
+          ? { [name]: exports[name]! }
+          : undefined
+    // Native catalogs resolve against every theme and target native hosts only.
+    function web(link: Themes.Link): Themes.Link {
+      return {
+        ...link,
+        ...(link.style
+          ? { style: { ...link.style, nativeContext: undefined } }
+          : {}),
+        ...(link.members
+          ? {
+              members: Object.fromEntries(
+                Object.entries(link.members).map(([name, member]) => [
+                  name,
+                  web(member),
+                ]),
+              ),
+            }
+          : {}),
+      }
+    }
+    if (links)
+      return Contract.write(
+        Object.fromEntries(
+          Object.entries(links).map(([name, link]) => [
+            name,
+            web(publishedStyle(link)),
+          ]),
+        ),
+        Object.fromEntries(
+          Object.values(links).flatMap((link) =>
+            sharedThemes[link.call.name]
+              ? [[link.call.name, sharedThemes[link.call.name]!]]
+              : [],
+          ),
+        ),
+      )
+
+    const value = constant(target, name)
+    if (value)
+      return JSON.stringify(value, (key, value: unknown) =>
+        key === 'start' || key === 'end' ? undefined : value,
+      )
+    return factory(target, name) ?? ''
+  }
+
+  function surfaces() {
+    const requested: Record<string, Set<string>> = Object.create(null)
+    const request = (target: string, names: readonly string[]) => {
+      if (!extracted.has(target)) return
+      const set = (requested[target] ??= new Set())
+      for (const name of names) set.add(name)
+    }
+    for (const id of emitted ?? []) {
+      for (const [target, names] of Object.entries(bindings[id] ?? {}))
+        request(target, names)
+      // Every emitted module signs its shares, so a first contribution reads as a change.
+      request(id, [Stylesheets.shares])
+    }
+    for (const [target, names] of Object.entries(
+      options[Stylesheets.surfaces] ?? {},
+    ))
+      request(target, names)
+
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(requested).map(([target, names]) => [
+          target,
+          Object.freeze(
+            Object.fromEntries(
+              [...names].map((name) => {
+                // An export that cannot be signed reads as changed on every compile.
+                try {
+                  return [name, signature(target, name)]
+                } catch {
+                  return [name, `\0unsigned ${++unsigned}`]
+                }
+              }),
+            ),
+          ),
+        ]),
+      ),
+    )
+  }
+
   function publishedStyle(link: Themes.Link): Themes.Link {
     return {
       ...link,
@@ -2050,32 +2196,51 @@ function build(options: compile.Options, cache?: Cache): Cache {
               id,
               Contract.write(
                 Object.fromEntries(
-                  Object.entries(extracted.get(id)!.themeExports ?? {}).map(
-                    ([name, link]) => [name, publishedStyle(link)],
-                  ),
+                  Object.entries(extracted.get(id)!.themeExports ?? {})
+                    // Catalogs read configuration exports and the themes they select.
+                    .filter(([, link]) => !emitted || link.kind === 'config')
+                    .map(([name, link]) => [name, publishedStyle(link)]),
                 ),
-                sharedThemes,
-                reachable(id).map((section) => ({
-                  ...section,
-                  owner: undefined,
-                  dependency:
-                    section.owner && section.owner !== id
-                      ? dependencyPath(id, section.owner)
-                      : undefined,
-                  source: Stylesheets.relative(
-                    section.owner ?? id,
-                    section.source,
-                  ),
-                })),
+                emitted
+                  ? Object.fromEntries(
+                      Object.values(extracted.get(id)!.themeExports ?? {})
+                        .filter(
+                          (link) =>
+                            link.kind === 'config' &&
+                            sharedThemes[link.call.name],
+                        )
+                        .map((link) => [
+                          link.call.name,
+                          sharedThemes[link.call.name]!,
+                        ]),
+                    )
+                  : sharedThemes,
+                // Catalogs need no stylesheets or rules, which walk every dependency.
+                emitted
+                  ? []
+                  : reachable(id).map((section) => ({
+                      ...section,
+                      owner: undefined,
+                      dependency:
+                        section.owner && section.owner !== id
+                          ? dependencyPath(id, section.owner)
+                          : undefined,
+                      source: Stylesheets.relative(
+                        section.owner ?? id,
+                        section.source,
+                      ),
+                    })),
                 id,
                 configurations(id),
-                publishedRules(id),
+                emitted ? {} : publishedRules(id),
               ),
             ]),
         ),
       ),
       dependencies: Object.freeze(dependencies),
       [Stylesheets.reads]: Object.freeze(reads),
+      [Stylesheets.bindings]: Object.freeze(bindings),
+      ...(emitted ? { [Stylesheets.surfaces]: surfaces() } : {}),
       [Stylesheets.contributors]: contributors,
       modules: Object.freeze(
         Object.fromEntries(ids.filter(emits).map((id) => [id, modules[id]!])),
@@ -2086,6 +2251,8 @@ function build(options: compile.Options, cache?: Cache): Cache {
     themes: sharedThemes,
   }
 }
+
+let unsigned = 0
 
 // A returned lazy map must not retain the graph compilation context.
 function nativeOutput(

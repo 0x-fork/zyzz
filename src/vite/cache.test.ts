@@ -19,7 +19,7 @@ describe('zyzz', () => {
           },
           "edited": {
             "extractions": 4,
-            "parses": 8,
+            "parses": 9,
           },
           "settled": {
             "extractions": 0,

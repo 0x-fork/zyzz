@@ -2609,6 +2609,23 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
         ),
       ).toMatchInlineSnapshot(`false`)
 
+      // Fixture creation reaches the watcher late and would coalesce with the edit.
+      await vi.waitUntil(() =>
+        server.watcher.getWatched()[root]?.includes('card.ts'),
+      )
+      await new Promise<void>((resolve) => {
+        const settle = () => {
+          server.watcher.off('all', reset)
+          resolve()
+        }
+        let timer = setTimeout(settle, 1000)
+        const reset = () => {
+          clearTimeout(timer)
+          timer = setTimeout(settle, 1000)
+        }
+        server.watcher.on('all', reset)
+      })
+
       socket = new WebSocket(
         `ws://127.0.0.1:${address.port}/?token=${server.config.webSocketToken}`,
         'vite-hmr',
@@ -2626,7 +2643,10 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
               path: Path.join(root, 'card.ts'),
               source: Fixture.files['card.ts'].replace('8px', '16px'),
             }),
-          (text) => /"type":"(update|full-reload)"/.test(text),
+          // Startup can queue an unrelated document reload.
+          (text) =>
+            text.includes('"type":"update"') ||
+            (text.includes('"type":"full-reload"') && text.includes('card.ts')),
         ),
       ) as { type: string; updates?: { path: string }[] }
 
@@ -2639,6 +2659,101 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
         [
           "main.ts",
           "card.ts.css",
+        ]
+      `)
+    } finally {
+      socket?.close()
+      await server.close()
+      await Fs.rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  test('development updates only modules that read the edited export', async () => {
+    const consumer = (name: string, imported: string) =>
+      `import { cx } from 'zyzz'; import { style } from './config'; import { ${imported} } from './shared'; namespace styles { export const local = style({ padding: '4px' }) }; export const ${name} = cx(styles.local(), ${imported}()).className;`
+    const { config, root } = await create({
+      ...Fixture.files,
+      'first.ts': consumer('first', 'muted'),
+      'main.ts': `import { first } from './first'; import { second } from './second'; document.body.className = [first, second].join(' '); if (import.meta.hot) import.meta.hot.accept();`,
+      'second.ts': consumer('second', 'strong'),
+      'shared.ts': `import { style } from './config'; export const muted = style({ opacity: 0.5 }); export const strong = style({ fontWeight: 700 });`,
+    })
+    const server = await Vite.createServer(config)
+    let socket: WebSocket | undefined
+
+    try {
+      await server.listen()
+
+      const address = server.httpServer!.address()
+      if (!address || typeof address === 'string')
+        throw new Error('Missing server port')
+
+      const origin = `http://127.0.0.1:${address.port}`
+      for (const path of [
+        '/main.ts',
+        '/first.ts',
+        '/second.ts',
+        '/shared.ts',
+      ]) {
+        const code = await (await fetch(origin + path)).text()
+        for (const [, css] of code.matchAll(
+          /import\s*["']([^"']*zyzz:[^"']+)["']/g,
+        ))
+          await fetch(origin + css)
+      }
+
+      // Fixture creation reaches the watcher late and would coalesce with the edit.
+      await vi.waitUntil(() =>
+        server.watcher.getWatched()[root]?.includes('shared.ts'),
+      )
+      await new Promise<void>((resolve) => {
+        const settle = () => {
+          server.watcher.off('all', reset)
+          resolve()
+        }
+        let timer = setTimeout(settle, 1000)
+        const reset = () => {
+          clearTimeout(timer)
+          timer = setTimeout(settle, 1000)
+        }
+        server.watcher.on('all', reset)
+      })
+
+      socket = new WebSocket(
+        `ws://127.0.0.1:${address.port}/?token=${server.config.webSocketToken}`,
+        'vite-hmr',
+      )
+      await new Promise<void>((resolve, reject) => {
+        socket!.onopen = () => resolve()
+        socket!.onerror = () => reject(new Error('WebSocket failed'))
+      })
+
+      const update = JSON.parse(
+        await message(
+          socket,
+          () =>
+            Watch.write({
+              path: Path.join(root, 'shared.ts'),
+              source: `import { style } from './config'; export const muted = style({ opacity: 0.5 }); export const strong = style({ fontWeight: 800 });`,
+            }),
+          // Startup can queue an unrelated document reload.
+          (text) =>
+            text.includes('"type":"update"') ||
+            (text.includes('"type":"full-reload"') &&
+              text.includes('shared.ts')),
+        ),
+      ) as { type: string; updates?: { path: string }[] }
+
+      expect(update.type).toMatchInlineSnapshot(`"update"`)
+      expect(
+        update.updates!.map((update) =>
+          decodeURIComponent(update.path).split('/').at(-1),
+        ),
+      ).toMatchInlineSnapshot(`
+        [
+          "main.ts",
+          "second.ts.css",
+          "shared.ts.css",
         ]
       `)
     } finally {
