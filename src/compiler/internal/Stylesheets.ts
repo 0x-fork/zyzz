@@ -26,6 +26,15 @@ export const packed = Symbol('packed stylesheets')
 /** Reset stylesheet shared independently of authored contributions and layer order. */
 export const reset = Symbol('reset stylesheet')
 
+/** Static dependencies whose exports each module's output reads, for hosts that update modules separately. */
+export const reads = Symbol('read dependencies')
+
+/** Modules whose global contributions or theme definitions render into shared stylesheets. */
+export const contributors = Symbol('shared contributors')
+
+/** Modules a host updates separately, which limits output to them and the modules they read. */
+export const targets = Symbol('target modules')
+
 /** One packed resource with stable source ownership for development updates. */
 export type Resource = ReturnType<typeof render> & { readonly id: string }
 

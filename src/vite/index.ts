@@ -17,6 +17,7 @@ import { createRequire, isBuiltin } from 'node:module'
 import * as Parser from 'oxc-parser'
 import * as Walker from 'oxc-walker'
 import * as Snapshot from '../node/internal/Snapshot.js'
+import * as Stylesheets from '../compiler/internal/Stylesheets.js'
 import * as Syntax from '../compiler/internal/Syntax.js'
 import * as Scope from '../compiler/internal/Scope.js'
 import type {
@@ -78,6 +79,11 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   const edges = new Map<string, ReadonlySet<string>>()
   const graphs = new Map<string, ReadonlySet<string>>()
   const initializers = new WeakMap<Environment, Entry>()
+  const sharedSheets = new WeakMap<
+    Environment,
+    { css: string; inputs: Set<string> }
+  >()
+  const sharedFailures = new WeakSet<Environment>()
   const sourceEntrypoints = new Set<string>()
   const identities = new Map<string, string>()
   const exclusions = new Map<string, boolean>()
@@ -86,6 +92,20 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   let filter: (id: unknown) => boolean
   let optimizeRuntime = false
   let root: string
+  let server: ViteDevServer | undefined
+  const watched = new Set<string>()
+
+  // Vite records addWatchFile targets as imports, and edges to shared compiler
+  // inputs form cycles that turn every edit into a full reload.
+  function watcher(context: { addWatchFile(file: string): void }) {
+    return (file: string) => {
+      if (!server) return context.addWatchFile(file)
+      if (watched.has(file)) return
+
+      watched.add(file)
+      server.watcher.add(file)
+    }
+  }
 
   function snapshot(environment: Environment) {
     let value = snapshots.get(environment)
@@ -414,12 +434,30 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     }
   }
 
-  async function compile(
+  // Unresolved inputs never join a failed compile's files, so creating any file retries it.
+  function compile(...args: Parameters<typeof compileGraph>) {
+    const [entry] = args
+
+    return compileGraph(...args).then(
+      (output) => {
+        entry.failed = false
+        return output
+      },
+      (error: unknown) => {
+        entry.failed = true
+        throw error
+      },
+    )
+  }
+
+  async function compileGraph(
     entry: Entry,
     host: Host,
     code?: string,
     allSources = false,
     everything = false,
+    // Further module compiles that share this graph, with their transform inputs.
+    roots: readonly { file: string; code?: string | undefined }[] = [],
   ) {
     // Every compile visits the discovered project, so modules share lookups
     // until the watcher reports a change. Full-project compiles look up afresh.
@@ -661,6 +699,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     }
 
     await visit(entry.file, code)
+    for (const root of roots) await visit(root.file, root.code)
 
     const connected = new Set(files)
     const entryContracts = new Set(Object.keys(contracts))
@@ -763,8 +802,9 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       }
 
       // A whole-project compile reads disk so the document never trails the watcher.
+      // Contributions render into the shared stylesheet, so module compiles skip them.
       if (everything) await visit(file)
-      else if (selected) await visit(file, source)
+      else if (selected && allSources) await visit(file, source)
     }
 
     const loaded = new Set<string>()
@@ -839,6 +879,15 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
 
     const result = entry.compiler.compile({
       [ThemeRules.shared]: native ? undefined : 'all',
+      // Module compiles serve one module; shared stylesheets compile every source.
+      ...(native || allSources || everything
+        ? {}
+        : {
+            [Stylesheets.targets]: [
+              entry.file,
+              ...roots.map((root) => root.file),
+            ].map(sourceId),
+          }),
       [Syntax.cache]: snapshot(entry.environment).programs(modules),
       compiler: options.compiler,
       reset: options.reset ? Reset.read() : undefined,
@@ -849,9 +898,35 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       modules,
     })
 
+    // Output reads each module's own source and the dependencies of the imports it links.
+    function inputs(ids: readonly string[]) {
+      const read = result[Stylesheets.reads] ?? {}
+      const found = new Set(ids)
+      const pending = ids.flatMap((id) => read[id] ?? [])
+
+      while (pending.length) {
+        const id = pending.pop()!
+        if (found.has(id)) continue
+
+        found.add(id)
+        pending.push(...(result.dependencies[id] ?? []))
+      }
+
+      return new Set([...found].map((id) => sourceFile(id) ?? id))
+    }
+
+    entry.inputs = inputs([sourceId(entry.file)])
+    const inputsOf = (file: string) => inputs([sourceId(file)])
+    const contributors = result[Stylesheets.contributors] ?? []
+    const sharedSources = {
+      contributors: new Set(contributors.map((id) => sourceFile(id) ?? id)),
+      inputs: inputs(contributors),
+    }
+
     if (native) {
       const output = result.modules[sourceId(entry.file)]!
-      entry.files = files
+      // Several roots share one visit, so only a single-root compile owns its files.
+      if (!roots.length) entry.files = files
       const map = Mapping.toEncodedMap(new Mapping.GenMapping())
       return {
         imports,
@@ -859,6 +934,8 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         code: output.code,
         contractIds: Object.keys(result.contracts),
         configurations: new Map<string, Catalogs.Catalog>(),
+        inputsOf,
+        sharedSources,
         connections: staged,
         css: '',
         sharedCss: '',
@@ -1053,7 +1130,8 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
 
     const output = result.modules[sourceId(entry.file)]!
 
-    entry.files = files
+    // Several roots share one visit, so only a single-root compile owns its files.
+    if (!roots.length) entry.files = files
 
     return {
       imports,
@@ -1061,6 +1139,8 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       code: output.code,
       contractIds: Object.keys(compiled),
       configurations,
+      inputsOf,
+      sharedSources,
       connections: staged,
       css: output.css,
       sharedCss: new TextDecoder().decode(shared.code),
@@ -1343,7 +1423,8 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         return { optimizeDeps: { include: [runtime] } }
       },
     },
-    configureServer(server) {
+    configureServer(value) {
+      server = value
       // Directory watches belong to the server, not module import dependencies.
       server.watcher.add(directories.slice(1))
 
@@ -1478,54 +1559,73 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       },
     },
     async watchChange(file, change) {
+      if (change.event === 'delete') watched.delete(file)
       await updateDiscovery(this.environment, file, change.event)
     },
     async hotUpdate({ file, modules, timestamp, type, server }) {
-      const state = entries(this.environment)
-      const previous = [...state.values()].map((entry) => ({
-        code: entry.code,
-        file: entry.file,
-        imports: entry.imports,
-      }))
+      const environment = this.environment
+      const state = entries(environment)
+      const contributions = contributionFiles.get(environment)
+      const contributed = contributions?.has(file)
 
-      await updateDiscovery(this.environment, file, type)
-      const first = [...state.values()].find(
-        (entry) => entry.files.has(file) || eager(file, this.environment),
+      await updateDiscovery(environment, file, type)
+
+      // A failed compile never recorded the inputs it could not resolve.
+      const owners = [...state.values()].filter(
+        (entry) =>
+          (entry.inputs ?? entry.files).has(file) ||
+          (entry.failed && (type === 'create' || entry.files.has(file))),
       )
-      if (!first && !removed.get(this.environment)?.has(file)) return modules
+      const candidate = contributed || contributions?.has(file)
+      if (!owners.length && !candidate && !removed.get(environment)?.has(file))
+        return modules
 
-      // Failed edits retain normal invalidation so Vite reports errors on reload.
-      const output =
-        first && type === 'update' && eligible(file)
-          ? await compile(
-              first,
-              {
-                resolve: resolver(this.environment),
-                watch: (file) => {
-                  server.watcher.add(file)
-                },
-                asset: async (file) => file,
-              },
-              undefined,
-              true,
-              true,
-            ).catch(() => undefined)
-          : undefined
-      const javascriptChanged = await (async () => {
-        if (!output) return true
+      const host: Host = {
+        resolve: resolver(environment),
+        watch: (file) => {
+          server.watcher.add(file)
+        },
+        asset: async (file) => file,
+      }
+      // Portable build adapters share this module and do not require Vite.
+      const { transformWithOxc } = await import('vite')
 
-        // Portable build adapters share this module and do not require Vite.
-        const { transformWithOxc } = await import('vite')
-        const changed = await Promise.all(
-          previous.map(async (entry) => {
-            const code = output.modules[sourceId(entry.file)]?.code
-            if (
-              entry.imports !==
-              JSON.stringify(output.imports[sourceId(entry.file)])
-            )
+      // Recompile every owner in one graph from the input its last transform
+      // received, and compare with what that transform and stylesheet load produced.
+      const [anchor, ...rest] = owners
+      const input = (entry: Entry) =>
+        entry.file === file ? undefined : entry.input
+      // Clients cache failed requests, so modules that failed reload either way.
+      const failures = new Map(owners.map((entry) => [entry, entry.failed]))
+      const output = anchor
+        ? await compile(
+            anchor,
+            host,
+            input(anchor),
+            false,
+            false,
+            rest.map((entry) => ({ file: entry.file, code: input(entry) })),
+          ).catch(() => undefined)
+        : undefined
+      const changes = await Promise.all(
+        owners.map(async (entry) => {
+          const id = sourceId(entry.file)
+          const module = output?.modules[id]
+          if (!output || !module) return { css: true, entry, javascript: true }
+
+          if (entry !== anchor) {
+            entry.failed = false
+            entry.inputs = output.inputsOf(entry.file)
+          }
+
+          const failed = failures.get(entry)
+          const code = module.code
+          const javascript = await (async () => {
+            if (failed) return true
+            if (entry.imports !== JSON.stringify(output.imports[id]))
               return true
             if (entry.code === code) return false
-            if (entry.code === undefined || code === undefined) return true
+            if (entry.code === undefined) return true
 
             // Generated type assertions can change without changing runtime bindings.
             const [before, after] = await Promise.all([
@@ -1533,32 +1633,68 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
               transformWithOxc(code, entry.file, { sourcemap: false }),
             ])
             return before.code !== after.code
-          }),
-        )
-        return changed.some(Boolean)
-      })()
-      // Compiler-only inputs have watch edges, but their stylesheets update separately.
+          })()
+
+          return { css: failed || module.css !== entry.css, entry, javascript }
+        }),
+      )
+
+      // Shared stylesheets render global contributions and theme definitions.
+      const sheet = sharedSheets.get(environment)
+      const first = state.values().next().value
+      async function contributes() {
+        if (sheet?.inputs.has(file)) return true
+        if (output?.sharedSources.contributors.has(file)) return true
+        // A file no module compile reads contributes only through its own calls.
+        if (!candidate || state.has(file) || type === 'delete') return false
+
+        const own = await compile(
+          {
+            compiler: compiler(environment),
+            environment,
+            file,
+            files: new Set([file]),
+          },
+          host,
+        ).catch(() => undefined)
+        return !own || own.sharedSources.contributors.has(file)
+      }
+      const sharedChanged =
+        sharedFailures.has(environment) ||
+        (!!sheet &&
+          !!first &&
+          (await contributes()) &&
+          (await compile(first, host, undefined, true).then(
+            (output) => output.sharedCss !== sheet.css,
+            () => true,
+          )))
+
+      const changed = new Set(
+        changes
+          .filter((change) => change.javascript)
+          .map((change) => change.entry.file),
+      )
+      // Modules whose compiled JavaScript is unchanged update through their stylesheets.
       const affected = new Set(
-        modules.filter(
-          (module) =>
-            javascriptChanged ||
-            (module.id
-              ? !output?.modules[sourceId(module.id)]
-              : module.type !== 'asset'),
+        modules.filter((module) =>
+          module.id
+            ? !state.has(module.id) || changed.has(module.id)
+            : module.type !== 'asset',
         ),
       )
       const ids = new Set<string>()
       if (type === 'delete') ids.add(cssId(file))
+      if (sharedChanged) ids.add(sharedId)
 
-      for (const entry of entries(this.environment).values()) {
-        if (!entry.files.has(file) && !eager(file, this.environment)) continue
-
+      for (const change of changes) {
         // Theme scopes affect CSS even when Vite's JavaScript import was erased.
-        // Rewritten importers can lose a source edge, so changed bindings must update together.
-        if (javascriptChanged) ids.add(entry.file)
-        ids.add(cssId(entry.file))
-        ids.add(sharedId)
+        if (change.javascript) ids.add(change.entry.file)
+        if (change.css) ids.add(cssId(change.entry.file))
       }
+
+      // Documents link stylesheets directly, beside the copies modules import.
+      for (const id of [...ids].filter((id) => id.startsWith(prefix)))
+        ids.add(`${id}?direct`)
 
       for (const id of ids) {
         const module = this.environment.moduleGraph.getModuleById(id)
@@ -1591,6 +1727,12 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       if (!entry && file && removed.get(this.environment)?.has(file)) return ''
       if (!entry) throw new Error(`Unknown Zyzz stylesheet: ${file}`)
 
+      // A failed load leaves no served stylesheet, so the next edit reloads it.
+      if (id === sharedId) {
+        sharedSheets.delete(this.environment)
+        sharedFailures.add(this.environment)
+      } else delete entry.css
+
       const output = await compile(
         entry,
         {
@@ -1598,7 +1740,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
             this.environment.mode === 'dev'
               ? resolver(this.environment)
               : (source, importer) => this.resolve(source, importer),
-          watch: (file) => this.addWatchFile(file),
+          watch: watcher(this),
           asset: async (file) => {
             const reference = this.emitFile({
               type: 'asset',
@@ -1626,6 +1768,14 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
               '-zyzz-fpv-000000000',
             )
           : css
+      if (id === sharedId) {
+        sharedSheets.set(this.environment, {
+          css: output.sharedCss,
+          inputs: output.sharedSources.inputs,
+        })
+        sharedFailures.delete(this.environment)
+      } else entry.css = output.css
+
       if (id === sharedId)
         return {
           code: transport(output.sharedCss),
@@ -1655,6 +1805,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         state.set(id, entry)
         removed.get(this.environment)?.delete(id)
       }
+      entry.input = code
 
       const output = await compile(
         entry,
@@ -1663,7 +1814,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
             this.environment.mode === 'dev'
               ? resolver(this.environment)
               : (source, importer) => this.resolve(source, importer),
-          watch: (file) => this.addWatchFile(file),
+          watch: watcher(this),
           asset: async (file) => {
             const reference = this.emitFile({
               type: 'asset',
@@ -1781,7 +1932,14 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
 
 type Entry = {
   code?: string
+  /** Stylesheet the last load served. */
+  css?: string
+  failed?: boolean
   imports?: string
+  /** Source the last transform received from earlier plugins. */
+  input?: string
+  /** Files whose content the module's compiled output reads. */
+  inputs?: Set<string>
   environment: Environment
   compiler: Graph.create.ReturnType
   file: string

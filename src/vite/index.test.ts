@@ -2572,6 +2572,82 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
     }
   }, 30000)
 
+  test('development updates only modules whose output reads the edited source', async () => {
+    const { config, root } = await create({
+      ...Fixture.files,
+      'badge.ts': `import { style } from './config'; export const badge = style({ color: 'brand', padding: '4px' })();`,
+      'main.ts': `import { props } from './card'; import { badge } from './badge'; document.body.className = [props.className, badge.className].join(' '); if (import.meta.hot) import.meta.hot.accept();`,
+    })
+    const server = await Vite.createServer(config)
+    let socket: WebSocket | undefined
+
+    try {
+      await server.listen()
+
+      const address = server.httpServer!.address()
+      if (!address || typeof address === 'string')
+        throw new Error('Missing server port')
+
+      const origin = `http://127.0.0.1:${address.port}`
+      for (const path of ['/main.ts', '/card.ts', '/badge.ts']) {
+        const code = await (await fetch(origin + path)).text()
+        for (const [, css] of code.matchAll(
+          /import\s*["']([^"']*zyzz:[^"']+)["']/g,
+        ))
+          await fetch(origin + css)
+      }
+
+      const graph = server.environments.client!.moduleGraph
+      const card = graph.getModuleById(Path.join(root, 'card.ts'))!
+
+      // Compiler inputs are watched without becoming module imports.
+      expect(
+        [...card.importedModules].some((module) =>
+          ['theme.ts', 'alternate.ts'].some((name) =>
+            module.file?.endsWith(name),
+          ),
+        ),
+      ).toMatchInlineSnapshot(`false`)
+
+      socket = new WebSocket(
+        `ws://127.0.0.1:${address.port}/?token=${server.config.webSocketToken}`,
+        'vite-hmr',
+      )
+      await new Promise<void>((resolve, reject) => {
+        socket!.onopen = () => resolve()
+        socket!.onerror = () => reject(new Error('WebSocket failed'))
+      })
+
+      const update = JSON.parse(
+        await message(
+          socket,
+          () =>
+            Watch.write({
+              path: Path.join(root, 'card.ts'),
+              source: Fixture.files['card.ts'].replace('8px', '16px'),
+            }),
+          (text) => /"type":"(update|full-reload)"/.test(text),
+        ),
+      ) as { type: string; updates?: { path: string }[] }
+
+      expect(update.type).toMatchInlineSnapshot(`"update"`)
+      expect(
+        update.updates!.map((update) =>
+          decodeURIComponent(update.path).split('/').at(-1),
+        ),
+      ).toMatchInlineSnapshot(`
+        [
+          "main.ts",
+          "card.ts.css",
+        ]
+      `)
+    } finally {
+      socket?.close()
+      await server.close()
+      await Fs.rm(root, { recursive: true, force: true })
+    }
+  }, 30000)
+
   test('Vite HMR updates rendered theme scopes in Chromium', async () => {
     const { config, root } = await create()
     const server = await Vite.createServer(config)

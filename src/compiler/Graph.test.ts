@@ -23,11 +23,47 @@ import { describe, expect, test } from 'vite-plus/test'
 import { Graph, Source, Transform } from 'zyzz/compiler'
 import { Host } from 'zyzz/node'
 import { Css } from 'zyzz/web'
+import * as Stylesheets from './internal/Stylesheets.js'
 
 const root = Path.resolve(import.meta.dirname, '../..')
 const modules = Fixture.modules
 
 describe('compile', () => {
+  test('limits targeted output to modules whose exports the targets read', () => {
+    const modules = {
+      'app/button.ts': `import { style } from './config'; export function Button() { return styles.button().className }; namespace styles { export const button = style({ padding: '4px' }) }`,
+      'app/card.ts': `import { style } from './config'; export const card = style({ color: 'red' })`,
+      'app/config.ts': `import { Config } from 'zyzz'; export const { style } = Config.create({ id: 'app' })`,
+      'app/global.ts': `import { global } from 'zyzz/web'; global({ body: { margin: 0 } })`,
+      'app/page.ts': `import { cx } from 'zyzz'; import { Button } from './button'; import { card } from './card'; export const page = [Button, cx(card())]`,
+    }
+    const result = Graph.compile({
+      [Stylesheets.targets]: ['app/page.ts'],
+      development: true,
+      modules,
+    })
+
+    expect(Object.keys(result.modules)).toMatchInlineSnapshot(`
+      [
+        "app/card.ts",
+        "app/config.ts",
+        "app/page.ts",
+      ]
+    `)
+    expect(result[Stylesheets.reads]?.['app/page.ts']).toMatchInlineSnapshot(`
+      [
+        "app/card.ts",
+      ]
+    `)
+    expect(result[Stylesheets.contributors]).toMatchInlineSnapshot(`
+      [
+        "app/config.ts",
+        "app/global.ts",
+      ]
+    `)
+    expect(result.sharedCss).toMatchInlineSnapshot(`undefined`)
+  })
+
   test('validates packed native style catalogs', () => {
     const publisher = Graph.compile({
       modules: {
