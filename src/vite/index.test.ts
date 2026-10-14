@@ -2173,10 +2173,10 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
       `import { global } from 'zyzz/web'; global({ body: { color: 'rebeccapurple' } });`,
     )
 
-    function options(plugin: zyzz.Options = {}) {
+    function configure(options: zyzz.Options = {}) {
       return {
         ...config,
-        plugins: [zyzz(plugin)],
+        plugins: [zyzz(options)],
         resolve: {
           alias: {
             ...(config.resolve!.alias as Record<string, string>),
@@ -2186,9 +2186,9 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
       }
     }
 
-    async function css(plugin: zyzz.Options = {}) {
+    async function css(options: zyzz.Options = {}) {
       const result = await Vite.build({
-        ...options(plugin),
+        ...configure(options),
         // Minification would rewrite color keywords.
         build: { cssMinify: false, write: false },
       })
@@ -2204,7 +2204,7 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
         .join('\n')
     }
 
-    const server = await Vite.createServer(options())
+    const server = await Vite.createServer(configure())
     try {
       await server.listen()
 
@@ -2252,6 +2252,11 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
       const included = await css({ include: ['examples/web'] })
 
       expect(included.includes('rebeccapurple')).toMatchInlineSnapshot(`true`)
+
+      // An include below the nested package's root still discovers it.
+      const source = await css({ include: ['examples/web/src'] })
+
+      expect(source.includes('rebeccapurple')).toMatchInlineSnapshot(`true`)
     } finally {
       await Fs.rm(root, { recursive: true, force: true })
     }
@@ -2269,10 +2274,10 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
       await Fs.writeFile(Path.join(root, name), content)
     }
 
-    function options(plugin: zyzz.Options = {}) {
+    function configure(options: zyzz.Options = {}) {
       return {
         ...config,
-        plugins: [zyzz(plugin)],
+        plugins: [zyzz(options)],
         resolve: {
           alias: {
             ...(config.resolve!.alias as Record<string, string>),
@@ -2282,9 +2287,9 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
       }
     }
 
-    async function css(plugin: zyzz.Options = {}) {
+    async function css(options: zyzz.Options = {}) {
       const result = await Vite.build({
-        ...options(plugin),
+        ...configure(options),
         // Minification would rewrite color keywords.
         build: { cssMinify: false, write: false },
       })
@@ -2300,7 +2305,7 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
         .join('\n')
     }
 
-    const server = await Vite.createServer(options())
+    const server = await Vite.createServer(configure())
     try {
       await server.listen()
 

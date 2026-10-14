@@ -2,10 +2,11 @@
 'zyzz': patch
 ---
 
-Scoped the Vite plugin's discovery to the application's source. Discovery scans the modules that `include` matches when it is set, otherwise the directories that hold a `zyzz.config.*` module, otherwise the Vite root. The `zyzz.config.*` search and the root scan skip nested packages, directories with their own `package.json` such as a workspace's examples. Modules the application imports still compile wherever they live.
+Scoped the Vite plugin's discovery to the application's source. Discovery scans what `include` matches, otherwise the directories holding a `zyzz.config.*` module, otherwise the Vite root. The last two skip nested packages, such as a workspace's examples.
 
-`include` now accepts globs and files, and replaces the default scope instead of adding to the Vite root. A configuration that listed a linked package beside the Vite root lists both.
+`include` now accepts globs and files, and replaces the default scope instead of adding directories beside the Vite root. Imported modules still compile below the Vite root and `include` directories.
 
 ```ts
+// Scans the application's source and a linked package, which replaced `include: ['../library/src']`
 zyzz({ include: ['src/**', '../library/src'] })
 ```

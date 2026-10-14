@@ -617,6 +617,11 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     // Import edges derive from resolutions and module text, which each memo compares.
     if (resolvable) edgeMemos.delete(environment)
 
+    // A manifest added or removed moves a nested-package boundary for later watcher events.
+    // Sources discovery already collected keep their status until the server restarts.
+    if (event !== 'update' && Path.basename(file) === 'package.json')
+      nestedPackages.clear()
+
     if (cache) {
       if (resolvable) cache.resolutions.clear()
 
@@ -1903,7 +1908,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       root = await Fs.realpath(config.root)
 
       const includes = await Promise.all(
-        (options.include ?? []).map((value) => pattern(root, value)),
+        (options.include ?? []).map((value) => pattern({ root, value })),
       )
       const bases = [...new Set(includes.map((entry) => entry.base))]
 
@@ -1931,7 +1936,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         scoped = undefined
 
         // A `zyzz.config.*` module marks the application's source directory.
-        const configured = await configDirectories(root, nested)
+        const configured = await configDirectories({ nested, root })
         if (configured.length) scopes = configured
       }
 
@@ -2486,8 +2491,11 @@ function contains(directory: string, file: string) {
  * glob syntax into the physical directory discovery walks and an absolute pattern. A plain path
  * names one file, or every module below a directory.
  */
-async function pattern(root: string, value: string) {
-  const segments = value.split('/')
+async function pattern(options: pattern.Options) {
+  const { root, value } = options
+
+  // Windows paths separate segments with either slash.
+  const segments = value.split(Path.sep === '\\' ? /[\\/]/ : '/')
   const index = segments.findIndex((segment) => /[*?[\]{}()!]/.test(segment))
   const prefix = index === -1 ? value : segments.slice(0, index).join('/')
   const file = await Fs.realpath(Path.resolve(root, prefix || '.')).catch(
@@ -2518,10 +2526,8 @@ async function pattern(root: string, value: string) {
  * Finds the directories holding a `zyzz.config.*` module below the Vite root, by name alone.
  * The walk skips the directories discovery skips, including nested packages.
  */
-async function configDirectories(
-  root: string,
-  nested: (directory: string) => boolean,
-) {
+async function configDirectories(options: configDirectories.Options) {
+  const { nested, root } = options
   const found: string[] = []
 
   async function walk(directory: string): Promise<void> {
@@ -2548,6 +2554,24 @@ async function configDirectories(
     (directory) =>
       !found.some((other) => other !== directory && contains(other, directory)),
   )
+}
+
+declare namespace configDirectories {
+  type Options = {
+    /** Whether discovery skips a directory as a nested package. */
+    readonly nested: (directory: string) => boolean
+    /** The physical Vite root. */
+    readonly root: string
+  }
+}
+
+declare namespace pattern {
+  type Options = {
+    /** The physical Vite root that relative entries resolve against. */
+    readonly root: string
+    /** The `include` entry: a glob, a file, or a directory. */
+    readonly value: string
+  }
 }
 
 /**
