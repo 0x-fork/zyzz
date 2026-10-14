@@ -68,6 +68,8 @@ export const { style, vars } = defineConfig({
 })
 ```
 
+The Vite plugin scans the directory that holds `zyzz.config.ts` for [global styles](/docs/api/vite#discovery), so place it at the root of the application's source, such as `src/zyzz.config.ts`.
+
 ### Style a Component
 
 Import the bound `style` helper and spread the applied props onto an element.

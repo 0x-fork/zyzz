@@ -277,6 +277,9 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   const lazyImports = new WeakMap<Parser.ParseResult, string[]>()
   const nestedPackages = new Map<string, boolean>()
   let directories: readonly string[]
+  // The directories discovery walks, and the include patterns that narrow it.
+  let scopes: readonly string[]
+  let scoped: ((id: unknown) => boolean) | undefined
   let filter: (id: unknown) => boolean
   let optimizeRuntime = false
   let root: string
@@ -378,16 +381,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   function sourceRoot(file: string) {
     if (roots.has(file)) return roots.get(file)
 
-    const root = directories.find((directory) => {
-      const relative = Path.relative(directory, file)
-
-      return (
-        relative !== '..' &&
-        !relative.startsWith(`..${Path.sep}`) &&
-        !Path.isAbsolute(relative) &&
-        !relative.split(Path.sep).includes('node_modules')
-      )
-    })
+    const root = directories.find((directory) => contains(directory, file))
 
     roots.set(file, root)
     return root
@@ -411,21 +405,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           for (const item of await Fs.readdir(directory, {
             withFileTypes: true,
           })) {
-            if (
-              item.name.startsWith('.') ||
-              [
-                'node_modules',
-                'dist',
-                'build',
-                'coverage',
-                'test',
-                'tests',
-                '__tests__',
-                'fixtures',
-                '__fixtures__',
-              ].includes(item.name)
-            )
-              continue
+            if (skipped(item.name)) continue
 
             const file = Path.join(directory, item.name)
 
@@ -443,7 +423,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           }
         }
 
-        for (const directory of directories) await collect(directory)
+        for (const directory of scopes) await collect(directory)
 
         return sources
       })()
@@ -456,13 +436,16 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   /**
    * Whether a directory below a source directory holds its own `package.json`. A nested package,
    * such as a workspace example, is a separate project with its own build, so discovery skips it.
-   * Its sources still compile when the application imports them.
+   * Its sources still compile when the application imports them. With `include`, the patterns
+   * alone decide.
    */
   function nested(directory: string) {
     let value = nestedPackages.get(directory)
 
     if (value === undefined) {
       value =
+        scoped === undefined &&
+        !scopes.includes(directory) &&
         !directories.includes(directory) &&
         existsSync(Path.join(directory, 'package.json'))
       nestedPackages.set(directory, value)
@@ -472,6 +455,10 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   }
 
   function eager(file: string, environment: Environment) {
+    // Watcher events reach files outside the scopes that discovery walked.
+    if (!scopes.some((scope) => contains(scope, file))) return false
+    if (scoped && !scoped(file)) return false
+
     const directory = sourceRoot(file)
 
     // Watcher events reach files below nested packages that discovery never visited.
@@ -1914,19 +1901,14 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     },
     async configResolved(config) {
       root = await Fs.realpath(config.root)
-      directories = [
-        root,
-        ...(await Promise.all(
-          (options.include ?? []).map(async (directory) => {
-            const file = await Fs.realpath(Path.resolve(root, directory))
-            if (!(await Fs.stat(file)).isDirectory())
-              throw new Error(
-                `Zyzz include paths must be directories: ${directory}`,
-              )
-            return file
-          }),
-        )),
-      ]
+
+      const includes = await Promise.all(
+        (options.include ?? []).map((value) => pattern(root, value)),
+      )
+      const bases = [...new Set(includes.map((entry) => entry.base))]
+
+      // The root keeps the `app` namespace, so only bases outside it add source directories.
+      directories = [root, ...bases.filter((base) => !contains(root, base))]
 
       // Portable build adapters share this module and do not require Vite.
       const { createFilter } = await import('vite')
@@ -1934,7 +1916,24 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
 
       filter = createFilter(null, patterns, { resolve: root })
       exclusions.clear()
+      nestedPackages.clear()
       roots.clear()
+
+      if (includes.length) {
+        scopes = bases
+        scoped = createFilter(
+          includes.map((entry) => entry.glob),
+          null,
+          { resolve: false },
+        )
+      } else {
+        scopes = [root]
+        scoped = undefined
+
+        // A `zyzz.config.*` module marks the application's source directory.
+        const configured = await configDirectories(root, nested)
+        if (configured.length) scopes = configured
+      }
 
       if (native) return
       const lightning = (config.css.lightningcss ??= {})
@@ -2452,6 +2451,105 @@ type Served = {
   shared: string | undefined
 }
 
+/** Whether discovery skips a directory entry: hidden entries, dependencies, build output, and tests. */
+function skipped(name: string) {
+  return (
+    name.startsWith('.') ||
+    [
+      'node_modules',
+      'dist',
+      'build',
+      'coverage',
+      'test',
+      'tests',
+      '__tests__',
+      'fixtures',
+      '__fixtures__',
+    ].includes(name)
+  )
+}
+
+/** Whether `file` is `directory` or lies below it, outside any `node_modules`. */
+function contains(directory: string, file: string) {
+  const relative = Path.relative(directory, file)
+
+  return (
+    relative !== '..' &&
+    !relative.startsWith(`..${Path.sep}`) &&
+    !Path.isAbsolute(relative) &&
+    !relative.split(Path.sep).includes('node_modules')
+  )
+}
+
+/**
+ * Resolves an `include` entry against the Vite root. A glob splits at its first segment with
+ * glob syntax into the physical directory discovery walks and an absolute pattern. A plain path
+ * names one file, or every module below a directory.
+ */
+async function pattern(root: string, value: string) {
+  const segments = value.split('/')
+  const index = segments.findIndex((segment) => /[*?[\]{}()!]/.test(segment))
+  const prefix = index === -1 ? value : segments.slice(0, index).join('/')
+  const file = await Fs.realpath(Path.resolve(root, prefix || '.')).catch(
+    () => {
+      throw new Error(
+        `Zyzz include patterns must start in an existing directory: ${value}`,
+      )
+    },
+  )
+  const posix = file.split(Path.sep).join('/')
+  const directory = (await Fs.stat(file)).isDirectory()
+
+  if (index !== -1) {
+    if (!directory)
+      throw new Error(
+        `Zyzz include patterns must start in an existing directory: ${value}`,
+      )
+
+    return { base: file, glob: `${posix}/${segments.slice(index).join('/')}` }
+  }
+
+  return directory
+    ? { base: file, glob: `${posix}/**` }
+    : { base: Path.dirname(file), glob: posix }
+}
+
+/**
+ * Finds the directories holding a `zyzz.config.*` module below the Vite root, by name alone.
+ * The walk skips the directories discovery skips, including nested packages.
+ */
+async function configDirectories(
+  root: string,
+  nested: (directory: string) => boolean,
+) {
+  const found: string[] = []
+
+  async function walk(directory: string): Promise<void> {
+    for (const item of await Fs.readdir(directory, { withFileTypes: true })) {
+      if (skipped(item.name)) continue
+
+      const file = Path.join(directory, item.name)
+
+      if (item.isDirectory()) {
+        if (!nested(file)) await walk(file)
+      } else if (
+        item.isFile() &&
+        /^zyzz\.config\.[cm]?[jt]sx?$/.test(item.name) &&
+        !found.includes(directory)
+      )
+        found.push(directory)
+    }
+  }
+
+  await walk(root)
+
+  // A configuration directory inside another adds nothing to the outer directory's walk.
+  return found.filter(
+    (directory) =>
+      !found.some((other) => other !== directory && contains(other, directory)),
+  )
+}
+
 /**
  * The end of a module's hashbang and directive prologue, where an added import keeps directives
  * first. Source without a leading string literal skips parsing.
@@ -2631,9 +2729,10 @@ export declare namespace zyzz {
      */
     readonly exclude?: readonly (RegExp | string)[] | undefined
     /**
-     * Additional source directories, absolute or relative to the Vite root. Discovery skips
-     * directories below a source directory that hold a `package.json`, such as workspace
-     * examples, so a nested package's unimported sources contribute only when it is listed here.
+     * Globs, files, or directories that discovery scans, absolute or relative to the Vite root.
+     * Setting them skips the `zyzz.config.*` search and nested-package skipping, and `exclude`
+     * still applies. A pattern must start in an existing directory, and directories outside the
+     * Vite root become source directories. Modules the application imports compile either way.
      */
     readonly include?: readonly string[] | undefined
     /** Native context captured at creation. Disables CSS delivery and initialization scripts. */

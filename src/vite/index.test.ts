@@ -120,16 +120,24 @@ function message(
 }
 
 describe('zyzz', () => {
-  test('rejects files passed as additional source directories', async () => {
+  test('rejects include patterns outside an existing directory', async () => {
     const { config, root } = await create()
     try {
       await expect(
         Vite.createServer({
           ...config,
-          plugins: [zyzz({ include: ['main.ts'] })],
+          plugins: [zyzz({ include: ['missing/**'] })],
         }),
       ).rejects.toThrowErrorMatchingInlineSnapshot(
-        '[Error: Zyzz include paths must be directories: main.ts]',
+        '[Error: Zyzz include patterns must start in an existing directory: missing/**]',
+      )
+      await expect(
+        Vite.createServer({
+          ...config,
+          plugins: [zyzz({ include: ['main.ts/**'] })],
+        }),
+      ).rejects.toThrowErrorMatchingInlineSnapshot(
+        '[Error: Zyzz include patterns must start in an existing directory: main.ts/**]',
       )
     } finally {
       await Fs.rm(root, { force: true, recursive: true })
@@ -2244,6 +2252,90 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
       const included = await css({ include: ['examples/web'] })
 
       expect(included.includes('rebeccapurple')).toMatchInlineSnapshot(`true`)
+    } finally {
+      await Fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('scopes discovery to zyzz.config directories unless include globs are set', async () => {
+    const { config, root } = await create()
+
+    for (const [name, content] of Object.entries({
+      'src/global.ts': `import { global } from 'zyzz/web'; global({ body: { color: 'rebeccapurple' } });`,
+      'src/zyzz.config.ts': 'export {}',
+      'tools/global.ts': `import { global } from 'zyzz/web'; global({ body: { color: 'papayawhip' } });`,
+    })) {
+      await Fs.mkdir(Path.dirname(Path.join(root, name)), { recursive: true })
+      await Fs.writeFile(Path.join(root, name), content)
+    }
+
+    function options(plugin: zyzz.Options = {}) {
+      return {
+        ...config,
+        plugins: [zyzz(plugin)],
+        resolve: {
+          alias: {
+            ...(config.resolve!.alias as Record<string, string>),
+            'zyzz/web': Path.resolve('src/web/index.ts'),
+          },
+        },
+      }
+    }
+
+    async function css(plugin: zyzz.Options = {}) {
+      const result = await Vite.build({
+        ...options(plugin),
+        // Minification would rewrite color keywords.
+        build: { cssMinify: false, write: false },
+      })
+      const output = Array.isArray(result) ? result[0]! : result
+      if (!('output' in output)) throw new Error('Unexpected watch build')
+
+      return output.output
+        .flatMap((file) =>
+          file.type === 'asset' && file.fileName.endsWith('.css')
+            ? [String(file.source)]
+            : [],
+        )
+        .join('\n')
+    }
+
+    const server = await Vite.createServer(options())
+    try {
+      await server.listen()
+
+      await server.transformRequest('/main.ts')
+      const shared = await server.transformRequest('\0zyzz:shared.css')
+
+      expect(shared!.code.includes('rebeccapurple')).toMatchInlineSnapshot(
+        `true`,
+      )
+      expect(shared!.code.includes('papayawhip')).toMatchInlineSnapshot(`false`)
+    } finally {
+      await server.close()
+    }
+
+    try {
+      const configured = await css()
+
+      // Modules the application imports compile outside the configuration directory.
+      expect(configured.includes('#06c')).toMatchInlineSnapshot(`true`)
+      expect(configured.includes('rebeccapurple')).toMatchInlineSnapshot(`true`)
+      expect(configured.includes('papayawhip')).toMatchInlineSnapshot(`false`)
+
+      const globbed = await css({ include: ['tools/**/*.ts'] })
+
+      expect(globbed.includes('#06c')).toMatchInlineSnapshot(`true`)
+      expect(globbed.includes('rebeccapurple')).toMatchInlineSnapshot(`false`)
+      expect(globbed.includes('papayawhip')).toMatchInlineSnapshot(`true`)
+
+      const excluded = await css({
+        exclude: ['tools/global.ts'],
+        include: ['**'],
+      })
+
+      expect(excluded.includes('rebeccapurple')).toMatchInlineSnapshot(`true`)
+      expect(excluded.includes('papayawhip')).toMatchInlineSnapshot(`false`)
     } finally {
       await Fs.rm(root, { recursive: true, force: true })
     }

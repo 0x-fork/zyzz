@@ -69,9 +69,7 @@ Modules named `vite.config.*`, `vitest.config.*`, or `vitest.workspace.*` are al
 - **Type:** `readonly string[]{:ts}`
 - **Default:** `[]{:ts}`
 
-Additional source directories compiled alongside the Vite root, absolute or relative to it. Their modules take part in CSS delivery, initialization scripts, source maps, and hot updates. Nested `node_modules`, build output, and test directories stay excluded.
-
-Discovery skips nested packages, directories below a source directory that hold a `package.json`, such as a workspace's examples. Modules the application imports from a nested package still compile. List a nested package here to also discover its unimported global styles.
+Globs, files, or directories that [discovery](#discovery) scans, absolute or relative to the Vite root. A directory covers every module below it. Setting `include` replaces the `zyzz.config.*` search and nested-package skipping, and `exclude` still removes modules from the result. Nested `node_modules`, build output, and test directories stay excluded.
 
 ```ts title="vite.config.ts"
 import { defineConfig } from 'vite'
@@ -79,12 +77,12 @@ import { zyzz } from 'zyzz/vite'
 
 export default defineConfig({
   // [!code hl:2]
-  // Compiles a linked workspace package's source
-  plugins: [zyzz({ include: ['../library/src'] })],
+  // Scans the application's source and a linked workspace package's source
+  plugins: [zyzz({ include: ['src/**', '../library/src'] })],
 })
 ```
 
-Each path must name an existing directory, and symlinks resolve to their physical paths. Exclude linked authoring packages from dependency optimization, and allow directories outside the workspace through `server.fs.allow`.
+A pattern must start in an existing directory, and symlinks resolve to their physical paths. Directories outside the Vite root become source directories, so their modules take part in CSS delivery, initialization scripts, source maps, and hot updates. Exclude linked authoring packages from dependency optimization, and allow directories outside the workspace through `server.fs.allow`.
 
 ### options.native
 
@@ -159,6 +157,28 @@ export default defineConfig({
   // Framework plugins transform the compiled modules
   plugins: [zyzz(), react()],
 })
+```
+
+## Discovery
+
+Discovery reads source modules that nothing imports yet, so their global styles reach the stylesheet from the first request. Modules the application imports compile wherever they live, whatever discovery covers.
+
+Discovery covers the first of these that applies:
+
+1. The modules that [`include`](#optionsinclude) matches.
+2. The directories that hold a `zyzz.config.*` module, found by name below the Vite root. Place the configuration at the root of the application's source, such as `src/zyzz.config.ts`, so tool configuration and scripts beside `src/` stay out.
+3. The Vite root.
+
+The `zyzz.config.*` search and a root scan skip nested packages: directories below the Vite root that hold their own `package.json`, such as a workspace's examples. [`exclude`](#optionsexclude) removes modules in every case. Adding or moving a `zyzz.config.*` module takes effect when the server restarts.
+
+```txt
+app/
+├── examples/web/      # skipped: nested package
+├── playwright.config.ts  # skipped: outside src/
+├── src/
+│   ├── global.ts      # discovered
+│   └── zyzz.config.ts # marks src/ as the source directory
+└── vite.config.ts
 ```
 
 ## Import Resolution
