@@ -2151,6 +2151,104 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
     }
   })
 
+  test('skips nested packages in discovery unless included', async () => {
+    const { config, root } = await create()
+    const example = Path.join(root, 'examples/web')
+
+    await Fs.mkdir(Path.join(example, 'src'), { recursive: true })
+    await Fs.writeFile(
+      Path.join(example, 'package.json'),
+      JSON.stringify({ name: 'example' }),
+    )
+    await Fs.writeFile(
+      Path.join(example, 'src/global.ts'),
+      `import { global } from 'zyzz/web'; global({ body: { color: 'rebeccapurple' } });`,
+    )
+
+    function options(plugin: zyzz.Options = {}) {
+      return {
+        ...config,
+        plugins: [zyzz(plugin)],
+        resolve: {
+          alias: {
+            ...(config.resolve!.alias as Record<string, string>),
+            'zyzz/web': Path.resolve('src/web/index.ts'),
+          },
+        },
+      }
+    }
+
+    async function css(plugin: zyzz.Options = {}) {
+      const result = await Vite.build({
+        ...options(plugin),
+        // Minification would rewrite color keywords.
+        build: { cssMinify: false, write: false },
+      })
+      const output = Array.isArray(result) ? result[0]! : result
+      if (!('output' in output)) throw new Error('Unexpected watch build')
+
+      return output.output
+        .flatMap((file) =>
+          file.type === 'asset' && file.fileName.endsWith('.css')
+            ? [String(file.source)]
+            : [],
+        )
+        .join('\n')
+    }
+
+    const server = await Vite.createServer(options())
+    try {
+      await server.listen()
+
+      await server.transformRequest('/main.ts')
+      const shared = await server.transformRequest('\0zyzz:shared.css')
+
+      expect(shared!.code.includes('rebeccapurple')).toMatchInlineSnapshot(
+        `false`,
+      )
+
+      // Sources added after startup follow the same rule. The application's own addition shows
+      // that the watcher reported both.
+      await Fs.writeFile(
+        Path.join(example, 'src/late.ts'),
+        `import { global } from 'zyzz/web'; global({ body: { color: 'papayawhip' } });`,
+      )
+      await Fs.writeFile(
+        Path.join(root, 'late.ts'),
+        `import { global } from 'zyzz/web'; global({ body: { color: 'peachpuff' } });`,
+      )
+      await expect
+        .poll(
+          async () =>
+            (await server.transformRequest('\0zyzz:shared.css'))!.code.includes(
+              'peachpuff',
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true)
+      const updated = await server.transformRequest('\0zyzz:shared.css')
+
+      expect(updated!.code.includes('papayawhip')).toMatchInlineSnapshot(
+        `false`,
+      )
+    } finally {
+      await server.close()
+    }
+
+    try {
+      const skipped = await css()
+
+      expect(skipped.includes('#06c')).toMatchInlineSnapshot(`true`)
+      expect(skipped.includes('rebeccapurple')).toMatchInlineSnapshot(`false`)
+
+      const included = await css({ include: ['examples/web'] })
+
+      expect(included.includes('rebeccapurple')).toMatchInlineSnapshot(`true`)
+    } finally {
+      await Fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('derives no contract from excluded sources that modules import', async () => {
     const { config, root } = await create({
       ...Fixture.files,

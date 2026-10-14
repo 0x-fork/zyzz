@@ -275,6 +275,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   // Every compile checks each import against the source directories.
   const roots = new Map<string, string | undefined>()
   const lazyImports = new WeakMap<Parser.ParseResult, string[]>()
+  const nestedPackages = new Map<string, boolean>()
   let directories: readonly string[]
   let filter: (id: unknown) => boolean
   let optimizeRuntime = false
@@ -428,8 +429,9 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
 
             const file = Path.join(directory, item.name)
 
-            if (item.isDirectory()) await collect(file)
-            else if (item.isFile() && eager(file, environment)) {
+            if (item.isDirectory()) {
+              if (!nested(file)) await collect(file)
+            } else if (item.isFile() && eager(file, environment)) {
               host.watch(file)
 
               const source = await Fs.readFile(file, 'utf8')
@@ -451,7 +453,35 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     return pending
   }
 
+  /**
+   * Whether a directory below a source directory holds its own `package.json`. A nested package,
+   * such as a workspace example, is a separate project with its own build, so discovery skips it.
+   * Its sources still compile when the application imports them.
+   */
+  function nested(directory: string) {
+    let value = nestedPackages.get(directory)
+
+    if (value === undefined) {
+      value =
+        !directories.includes(directory) &&
+        existsSync(Path.join(directory, 'package.json'))
+      nestedPackages.set(directory, value)
+    }
+
+    return value
+  }
+
   function eager(file: string, environment: Environment) {
+    const directory = sourceRoot(file)
+
+    // Watcher events reach files below nested packages that discovery never visited.
+    for (
+      let parent = Path.dirname(file);
+      directory !== undefined && parent !== directory;
+      parent = Path.dirname(parent)
+    )
+      if (nested(parent)) return false
+
     return (
       eligible(file) &&
       file !== environment.config.configFile &&
@@ -2600,7 +2630,11 @@ export declare namespace zyzz {
      * modules are always excluded.
      */
     readonly exclude?: readonly (RegExp | string)[] | undefined
-    /** Additional source directories, absolute or relative to the Vite root. */
+    /**
+     * Additional source directories, absolute or relative to the Vite root. Discovery skips
+     * directories below a source directory that hold a `package.json`, such as workspace
+     * examples, so a nested package's unimported sources contribute only when it is listed here.
+     */
     readonly include?: readonly string[] | undefined
     /** Native context captured at creation. Disables CSS delivery and initialization scripts. */
     readonly native?: Graph.compile.Options['native']

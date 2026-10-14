@@ -71,6 +71,8 @@ Modules named `vite.config.*`, `vitest.config.*`, or `vitest.workspace.*` are al
 
 Additional source directories compiled alongside the Vite root, absolute or relative to it. Their modules take part in CSS delivery, initialization scripts, source maps, and hot updates. Nested `node_modules`, build output, and test directories stay excluded.
 
+Discovery skips nested packages, directories below a source directory that hold a `package.json`, such as a workspace's examples. Modules the application imports from a nested package still compile. List a nested package here to also discover its unimported global styles.
+
 ```ts title="vite.config.ts"
 import { defineConfig } from 'vite'
 import { zyzz } from 'zyzz/vite'
