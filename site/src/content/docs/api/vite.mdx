@@ -69,7 +69,9 @@ Modules named `vite.config.*`, `vitest.config.*`, or `vitest.workspace.*` are al
 - **Type:** `readonly string[]{:ts}`
 - **Default:** `[]{:ts}`
 
-Globs, files, or directories that [discovery](#discovery) scans, absolute or relative to the Vite root. A directory covers every module below it. Setting `include` replaces the `zyzz.config.*` search and nested-package skipping, and `exclude` still removes modules from the result. Nested `node_modules`, build output, and test directories stay excluded.
+Globs, files, or directories that [discovery](#discovery) scans, absolute or relative to the Vite root. A directory covers every module below it.
+
+Setting `include` replaces the `zyzz.config.*` search and nested-package skipping, and `exclude` still removes modules from the result. Hidden directories, nested `node_modules`, build output, and test directories stay excluded unless a pattern starts inside one.
 
 ```ts title="vite.config.ts"
 import { defineConfig } from 'vite'

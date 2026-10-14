@@ -21,6 +21,7 @@ import * as Walker from 'oxc-walker'
 import * as Snapshot from '../node/internal/Snapshot.js'
 import * as Scope from '../compiler/internal/Scope.js'
 import type {
+  createFilter,
   DevEnvironment,
   Environment,
   EnvironmentModuleNode,
@@ -279,7 +280,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   let directories: readonly string[]
   // The directories discovery walks, and the include patterns that narrow it.
   let scopes: readonly string[]
-  let scoped: ((id: unknown) => boolean) | undefined
+  let scoped: ((file: string) => boolean) | undefined
   let filter: (id: unknown) => boolean
   let optimizeRuntime = false
   let root: string
@@ -1907,16 +1908,19 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     async configResolved(config) {
       root = await Fs.realpath(config.root)
 
+      // Portable build adapters share this module and do not require Vite.
+      const { createFilter } = await import('vite')
+
       const includes = await Promise.all(
-        (options.include ?? []).map((value) => pattern({ root, value })),
+        (options.include ?? []).map((value) =>
+          pattern({ createFilter, root, value }),
+        ),
       )
       const bases = [...new Set(includes.map((entry) => entry.base))]
 
       // The root keeps the `app` namespace, so only bases outside it add source directories.
       directories = [root, ...bases.filter((base) => !contains(root, base))]
 
-      // Portable build adapters share this module and do not require Vite.
-      const { createFilter } = await import('vite')
       const patterns = [...configFiles, ...(options.exclude ?? [])]
 
       filter = createFilter(null, patterns, { resolve: root })
@@ -1926,11 +1930,17 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
 
       if (includes.length) {
         scopes = bases
-        scoped = createFilter(
-          includes.map((entry) => entry.glob),
-          null,
-          { resolve: false },
-        )
+        scoped = (file) =>
+          includes.some((entry) => {
+            const relative = Path.relative(entry.base, file)
+
+            return (
+              relative !== '..' &&
+              !relative.startsWith(`..${Path.sep}`) &&
+              !Path.isAbsolute(relative) &&
+              entry.test(relative.split(Path.sep).join('/'))
+            )
+          })
       } else {
         scopes = [root]
         scoped = undefined
@@ -2487,39 +2497,53 @@ function contains(directory: string, file: string) {
 }
 
 /**
- * Resolves an `include` entry against the Vite root. A glob splits at its first segment with
- * glob syntax into the physical directory discovery walks and an absolute pattern. A plain path
- * names one file, or every module below a directory.
+ * Resolves an `include` entry against the Vite root into the physical directory discovery walks and
+ * a test for paths relative to it. An existing path names one file, or every module below a
+ * directory, even when it contains glob syntax such as `app/[locale]`. Any other entry splits at
+ * its first segment with glob syntax.
  */
 async function pattern(options: pattern.Options) {
-  const { root, value } = options
+  const { createFilter, root, value } = options
+  const invalid = () =>
+    new Error(
+      `Zyzz include patterns must start in an existing directory: ${value}`,
+    )
+
+  const literal = await Fs.realpath(Path.resolve(root, value)).catch(
+    () => undefined,
+  )
+
+  if (literal) {
+    if ((await Fs.stat(literal)).isDirectory())
+      return { base: literal, test: () => true }
+
+    const name = Path.basename(literal)
+
+    return {
+      base: Path.dirname(literal),
+      test: (relative: string) => relative === name,
+    }
+  }
 
   // Windows paths separate segments with either slash.
   const segments = value.split(Path.sep === '\\' ? /[\\/]/ : '/')
   const index = segments.findIndex((segment) => /[*?[\]{}()!]/.test(segment))
-  const prefix = index === -1 ? value : segments.slice(0, index).join('/')
-  const file = await Fs.realpath(Path.resolve(root, prefix || '.')).catch(
-    () => {
-      throw new Error(
-        `Zyzz include patterns must start in an existing directory: ${value}`,
-      )
-    },
-  )
-  const posix = file.split(Path.sep).join('/')
-  const directory = (await Fs.stat(file)).isDirectory()
+  if (index === -1) throw invalid()
 
-  if (index !== -1) {
-    if (!directory)
-      throw new Error(
-        `Zyzz include patterns must start in an existing directory: ${value}`,
-      )
+  // An absolute glob with syntax in its first segment starts at the filesystem root.
+  const prefix =
+    segments.slice(0, index).join('/') || (value.startsWith('/') ? '/' : '.')
+  const base = await Fs.realpath(Path.resolve(root, prefix)).catch(() => {
+    throw invalid()
+  })
+  if (!(await Fs.stat(base)).isDirectory()) throw invalid()
 
-    return { base: file, glob: `${posix}/${segments.slice(index).join('/')}` }
-  }
+  // Relative matching keeps glob syntax in the base's own path literal.
+  const glob = createFilter([segments.slice(index).join('/')], null, {
+    resolve: false,
+  })
 
-  return directory
-    ? { base: file, glob: `${posix}/**` }
-    : { base: Path.dirname(file), glob: posix }
+  return { base, test: (relative: string) => glob(relative) }
 }
 
 /**
@@ -2567,6 +2591,8 @@ declare namespace configDirectories {
 
 declare namespace pattern {
   type Options = {
+    /** Vite's glob filter, loaded where Vite is available. */
+    readonly createFilter: typeof createFilter
     /** The physical Vite root that relative entries resolve against. */
     readonly root: string
     /** The `include` entry: a glob, a file, or a directory. */

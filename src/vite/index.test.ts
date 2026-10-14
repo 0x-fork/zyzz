@@ -2266,6 +2266,7 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
     const { config, root } = await create()
 
     for (const [name, content] of Object.entries({
+      'routes/[locale]/global.ts': `import { global } from 'zyzz/web'; global({ body: { color: 'lavender' } });`,
       'src/global.ts': `import { global } from 'zyzz/web'; global({ body: { color: 'rebeccapurple' } });`,
       'src/zyzz.config.ts': 'export {}',
       'tools/global.ts': `import { global } from 'zyzz/web'; global({ body: { color: 'papayawhip' } });`,
@@ -2333,6 +2334,12 @@ Object.assign(globalThis, { fixture: { card: shared.card().className, label, pro
       expect(globbed.includes('#06c')).toMatchInlineSnapshot(`true`)
       expect(globbed.includes('rebeccapurple')).toMatchInlineSnapshot(`false`)
       expect(globbed.includes('papayawhip')).toMatchInlineSnapshot(`true`)
+
+      // An existing path with glob syntax names that directory.
+      const literal = await css({ include: ['routes/[locale]'] })
+
+      expect(literal.includes('lavender')).toMatchInlineSnapshot(`true`)
+      expect(literal.includes('papayawhip')).toMatchInlineSnapshot(`false`)
 
       const excluded = await css({
         exclude: ['tools/global.ts'],
