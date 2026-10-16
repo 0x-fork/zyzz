@@ -182,7 +182,7 @@ namespace styles {
   export const label = style({ color: 'muted', fontSize: '12px' })
 
   export const input = style({
-    backgroundColor: 'transparent',
+    backgroundColor: 'transparent !custom',
     border: 'none',
     color: 'ink',
     font: 'inherit',
