@@ -22,6 +22,18 @@ pnpm --dir site preview
 
 After authenticating with `pnpm --dir site exec wrangler login`, build and deploy with `pnpm --dir site deploy`. The Worker name is `zyzz-site`.
 
+## Playground
+
+`/playground` offers Styles and Variants React examples and a Vanilla JS example. A Web Worker compiles source with the Rust compiler for a live preview, generated CSS, and rewritten source. Share links encode source, framework, and tab order in the URL fragment. Existing React links remain supported.
+
+The default Styles example uses light/dark color pairs in its config. The preview inherits the page's Light, Dark, or System scheme through CSS, without recompiling source or resetting application state.
+
+File tabs support dragging and Alt+Left/Right reordering without changing CSS emission order. The plus button adds top-level `.ts`, `.tsx`, `.js`, or `.jsx` files, up to 20 files. React mounts `App.tsx`. Vanilla JS mounts a DOM node returned by `App.js`. `index.*` is reserved for preview bootstrapping.
+
+The page renders its controls and source before loading Monaco, the syntax highlighter, or the preview. Monaco uses the docs' Tempo themes. The isolated preview uses Sandpack and needs network access. It is not an offline or private execution environment.
+
+Site `dev` and `build` generate the playground assets automatically with the pinned Rust toolchain and `wasm32-wasip1` target. `pnpm --dir site build:playground` builds them separately. Browsers fetch the generated manifest, runtime, and full compiler from `public/playground`. Other routes and typechecks do not require these assets. The library's lightweight CSS Wasm is unchanged.
+
 ## Search
 
 The docs dialog searches a MiniSearch index of every page and `##` or `###` section, built from the MDX sources and loaded on first use.

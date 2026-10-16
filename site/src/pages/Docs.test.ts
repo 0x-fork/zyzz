@@ -7,9 +7,8 @@ import { afterAll, beforeAll, describe, expect, test } from 'vite-plus/test'
 
 const origin = 'http://localhost:3157'
 let server: ChildProcess.ChildProcess
-const directory = Fs.realpathSync(
-  Fs.mkdtempSync(`${Os.tmpdir()}/zyzz-docs-test-`),
-)
+const root = Fs.realpathSync(Fs.mkdtempSync(`${Os.tmpdir()}/zyzz-docs-test-`))
+const directory = `${root}/site`
 const site = new URL('../..', import.meta.url)
 const fixture = `${directory}/src/content/docs/guides/navigation-review-fixture.mdx`
 const outlineFixture = `${directory}/src/content/docs/guides/outline-review-fixture.mdx`
@@ -18,6 +17,8 @@ const twoslashFixture = `${directory}/src/content/docs/guides/twoslash-review-fi
 
 describe('/docs', () => {
   beforeAll(async () => {
+    // Preserve the playground worker's repository-relative Wasm adapter import.
+    Fs.symlinkSync(new URL('../src', site), `${root}/src`, 'dir')
     Fs.cpSync(new URL('src', site), `${directory}/src`, { recursive: true })
     for (const file of [
       'package.json',
@@ -164,7 +165,7 @@ describe('/docs', () => {
       await new Promise((resolve) => setTimeout(resolve, 250))
     }
     throw new Error(`Documentation site did not start. ${output}`)
-  }, 150000)
+  }, 300000)
 
   afterAll(async () => {
     if (server?.pid && server.exitCode === null) {
@@ -172,7 +173,283 @@ describe('/docs', () => {
       process.kill(-server.pid, 'SIGTERM')
       await exited
     }
-    Fs.rmSync(directory, { recursive: true, force: true })
+    Fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  test('serves playground controls and source before browser tools load', async () => {
+    const browser = await chromium.launch({ headless: true })
+    try {
+      const page = await browser.newPage({ javaScriptEnabled: false })
+      await page.goto(`${origin}/playground`)
+
+      expect(
+        await page.getByRole('heading', { level: 1 }).textContent(),
+      ).toMatchInlineSnapshot('"Playground"')
+      expect(
+        (
+          await page
+            .getByRole('textbox', { name: 'App.tsx source' })
+            .textContent()
+        )?.includes('Edit the root component'),
+      ).toMatchInlineSnapshot('true')
+      const editor = page.getByRole('textbox', { name: 'App.tsx source' })
+      expect(
+        await editor
+          .locator(':scope > span > span:first-child')
+          .allTextContents()
+          .then((lines) => lines.slice(0, 5)),
+      ).toMatchInlineSnapshot(`
+        [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+        ]
+      `)
+      expect(
+        await editor
+          .locator('span[style*="color:"]')
+          .first()
+          .evaluate(
+            (element) =>
+              getComputedStyle(element).color !==
+              getComputedStyle(element.parentElement!).color,
+          ),
+      ).toMatchInlineSnapshot('true')
+      expect(
+        await editor
+          .locator('span[aria-hidden][style]')
+          .first()
+          .evaluate((element) => getComputedStyle(element).borderLeftWidth),
+      ).toMatchInlineSnapshot('"1px"')
+      expect(
+        (
+          await page.getByRole('combobox', { name: 'Example' }).textContent()
+        )?.includes('Styles'),
+      ).toMatchInlineSnapshot('true')
+      expect(
+        await page
+          .getByRole('link', { name: 'Docs', exact: true })
+          .getAttribute('href'),
+      ).toMatchInlineSnapshot('"/docs/introduction/getting-started"')
+
+      const preview = page.getByTitle('Live preview', { exact: true })
+      expect(
+        await preview.evaluate((element) => getComputedStyle(element).opacity),
+      ).toMatchInlineSnapshot('"0"')
+      expect(
+        await preview.evaluate(
+          (element) => getComputedStyle(element).transitionDuration,
+        ),
+      ).toMatchInlineSnapshot('"0.18s"')
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      expect(
+        await preview.evaluate(
+          (element) => getComputedStyle(element).transitionDuration,
+        ),
+      ).toMatchInlineSnapshot('"0s"')
+    } finally {
+      await browser.close()
+    }
+  })
+
+  test('keeps playground source visible through mounting and shows tooltips above the file bar', async () => {
+    const browser = await chromium.launch({ headless: true })
+    try {
+      const page = await browser.newPage({
+        viewport: { width: 1400, height: 900 },
+      })
+      // Allow the normal 30-second browser budget at 4× CPU throttling.
+      page.setDefaultTimeout(120_000)
+      const session = await page.context().newCDPSession(page)
+      await session.send('Emulation.setCPUThrottlingRate', { rate: 4 })
+      await page.addInitScript(() => {
+        const frames: boolean[] = []
+        let started = false
+        Reflect.set(window, 'editorFrames', frames)
+
+        function sample() {
+          const source = document.querySelector(
+            'section[aria-label="Source editor"]',
+          )
+          const fallback = source?.querySelector('pre[role="textbox"]')
+          const editor = source?.querySelector('.monaco-editor')
+          if (fallback) started = true
+          const complete =
+            !!editor &&
+            getComputedStyle(editor).visibility === 'visible' &&
+            editor.getBoundingClientRect().width >=
+              source!.getBoundingClientRect().width - 1 &&
+            !!editor
+              .querySelector('.view-line')
+              ?.textContent?.replaceAll('\u00a0', ' ')
+              .startsWith('import Logo')
+
+          if (started) frames.push(!!fallback || complete)
+          if (complete) Reflect.set(window, 'editorFramesComplete', true)
+          else requestAnimationFrame(sample)
+        }
+        requestAnimationFrame(sample)
+      })
+      await page.goto(`${origin}/playground`)
+      await page.waitForFunction(() =>
+        Reflect.get(window, 'editorFramesComplete'),
+      )
+      expect(
+        await page.evaluate(() => {
+          const frames = Reflect.get(window, 'editorFrames') as boolean[]
+          return frames.length > 1 && frames.every(Boolean)
+        }),
+      ).toMatchInlineSnapshot('true')
+      await session.send('Emulation.setCPUThrottlingRate', { rate: 1 })
+
+      const editor = page.locator('.monaco-editor').first()
+      const line = editor.locator('.view-line').first()
+      // Hover the imported Logo on the first line, where the popup crosses the file bar.
+      await line.hover({ position: { x: 8 * 9, y: 12 } })
+      const tooltip = page.locator('.monaco-hover:visible').first()
+      await tooltip.waitFor({ state: 'visible' })
+
+      expect(
+        (await tooltip.boundingBox())!.y < (await editor.boundingBox())!.y,
+      ).toMatchInlineSnapshot('true')
+      expect(
+        await tooltip.evaluate((element) => {
+          const bounds = element.getBoundingClientRect()
+          return element.contains(
+            document.elementFromPoint(bounds.x + 20, bounds.y + 10),
+          )
+        }),
+      ).toMatchInlineSnapshot('true')
+    } finally {
+      await browser.close()
+    }
+  }, 120_000)
+
+  test('removes playground files with hover and keyboard controls and preserves share links', async () => {
+    const browser = await chromium.launch({
+      args: [
+        '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4',
+      ],
+      headless: true,
+    })
+    try {
+      const page = await browser.newPage({
+        viewport: { width: 1400, height: 900 },
+      })
+      await page.goto(`${origin}/playground`)
+      await page.locator('.monaco-editor').first().waitFor({ state: 'visible' })
+      expect(
+        await page
+          .getByRole('button', { name: 'Remove App.tsx', exact: true })
+          .count(),
+      ).toMatchInlineSnapshot('0')
+      expect(
+        await page
+          .getByRole('button', { name: 'Remove zyzz.config.ts', exact: true })
+          .count(),
+      ).toMatchInlineSnapshot('0')
+
+      for (const name of ['first.ts', 'middle.ts', 'last.ts']) {
+        await page
+          .getByRole('button', { name: 'New file', exact: true })
+          .click()
+        await page
+          .getByRole('textbox', { name: 'Filename', exact: true })
+          .fill(name)
+        await page.getByRole('button', { name: 'Create', exact: true }).click()
+      }
+      const middle = page.getByRole('button', {
+        name: 'middle.ts',
+        exact: true,
+      })
+      const removeMiddle = page.getByRole('button', {
+        name: 'Remove middle.ts',
+        exact: true,
+      })
+      await page.mouse.move(0, 0)
+      expect(
+        await removeMiddle.evaluate(
+          (element) => getComputedStyle(element).opacity,
+        ),
+      ).toMatchInlineSnapshot('"0"')
+      await middle.hover()
+      expect(
+        await removeMiddle.evaluate(
+          (element) => getComputedStyle(element).opacity,
+        ),
+      ).toMatchInlineSnapshot('"1"')
+      await middle.click()
+      await page.mouse.move(0, 0)
+      await page.keyboard.press('Tab')
+      expect(
+        await removeMiddle.evaluate(
+          (element) =>
+            element === document.activeElement &&
+            getComputedStyle(element).opacity === '1',
+        ),
+      ).toMatchInlineSnapshot('true')
+      await page.keyboard.press('Enter')
+      await middle.waitFor({ state: 'detached' })
+      expect(
+        await page.locator('[data-file][aria-pressed="true"]').textContent(),
+      ).toMatchInlineSnapshot('"last.ts"')
+      expect(
+        await page.locator('[data-file]:focus').textContent(),
+      ).toMatchInlineSnapshot('"last.ts"')
+
+      await page.getByRole('button', { name: 'first.ts', exact: true }).hover()
+      await page
+        .getByRole('button', { name: 'Remove first.ts', exact: true })
+        .click()
+      expect(
+        await page.locator('[data-file][aria-pressed="true"]').textContent(),
+      ).toMatchInlineSnapshot('"last.ts"')
+      await page.getByRole('button', { name: 'last.ts', exact: true }).hover()
+      await page
+        .getByRole('button', { name: 'Remove last.ts', exact: true })
+        .click()
+      expect(
+        await page.locator('[data-file][aria-pressed="true"]').textContent(),
+      ).toMatchInlineSnapshot('"zyzz.config.ts"')
+
+      await page
+        .getByRole('button', { name: 'Copy share link', exact: true })
+        .click()
+      await page.reload()
+      await page.locator('.monaco-editor').first().waitFor({ state: 'visible' })
+      expect(await page.locator('[data-file]').allTextContents())
+        .toMatchInlineSnapshot(`
+        [
+          "App.tsx",
+          "Logo.tsx",
+          "zyzz.config.ts",
+        ]
+      `)
+      await page.getByRole('button', { name: 'New file', exact: true }).click()
+      await page
+        .getByRole('textbox', { name: 'Filename', exact: true })
+        .fill('middle.ts')
+      await page.getByRole('button', { name: 'Create', exact: true }).click()
+      expect(
+        await page.locator('[data-file][aria-pressed="true"]').textContent(),
+      ).toMatchInlineSnapshot('"middle.ts"')
+
+      await page.goto(`${origin}/playground`)
+      await page.getByRole('combobox', { name: 'Example' }).click()
+      await page.getByRole('option', { name: /^Vanilla JS/ }).click()
+      await page
+        .getByRole('button', { name: 'zyzz.config.js', exact: true })
+        .waitFor()
+      expect(
+        await page
+          .getByRole('button', { name: /^Remove (App.js|zyzz.config.js)$/ })
+          .count(),
+      ).toMatchInlineSnapshot('0')
+    } finally {
+      await browser.close()
+    }
   })
 
   test('lists published guides in sidebar navigation', async () => {

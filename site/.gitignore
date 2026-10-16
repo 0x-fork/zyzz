@@ -2,5 +2,6 @@
 .env*
 .tanstack/
 .wrangler/
+public/playground/
 src/routeTree.gen.ts
 worker-configuration.d.ts
