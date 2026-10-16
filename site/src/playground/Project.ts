@@ -31,8 +31,10 @@ export const { style, variants, vars } = defineConfig({
       border: { dark: '#333333', light: '#e5e5e5' },
       canvas: { dark: '#0a0a0a', light: '#ffffff' },
       ink: { dark: '#ededed', light: '#171717' },
+      muted: { dark: '#a1a1a1', light: '#666666' },
       onAccent: { dark: '#171717', light: '#ffffff' },
       paper: { dark: '#111111', light: '#fafafa' },
+      subtle: { dark: '#1f1f1f', light: '#f0f0f0' },
     },
     spacing: { gap: '16px' },
   },
@@ -45,149 +47,193 @@ export const examples: Record<
   { description: string; files: Files; framework: Framework }
 > = {
   Styles: {
-    description: 'React · Themes and hover styles',
+    description: 'React · Themed sign-in form',
     framework: 'react',
     files: {
-      'App.tsx': `import Logo from './Logo.js'
+      'App.tsx': `import { useState } from 'react'
+import Logo from './Logo.js'
 import { style } from './zyzz.config.js'
 
-const steps = [
-  <>Edit the root component in <code>App.tsx</code>.</>,
-  <>Add files for more components.</>,
-  <>Define tokens in <code>zyzz.config.ts</code>.</>,
-  <>Use Share to copy a link to this project.</>,
+const links = [
+  { href: 'https://zyzz.style/docs/introduction/getting-started', label: 'Docs' },
+  { href: 'https://github.com/wevm/zyzz', label: 'GitHub' },
+  { href: 'https://www.npmjs.com/package/zyzz', label: 'npm' },
 ]
 
 export default function App() {
+  const [email, setEmail] = useState('')
+  const [sent, setSent] = useState(false)
   return (
-    <main {...styles.page()}>
-      <article {...styles.card()}>
-        <h1 {...styles.title()}>
-          <Logo /> <span>playground</span>
-        </h1>
-        <ul {...styles.steps()}>
-          {steps.map((step, index) => (
-            <li key={index} {...styles.step()}>
-              <span aria-hidden="true" {...styles.check()}>✓</span>
-              <span>{step}</span>
-            </li>
-          ))}
-        </ul>
+    <div {...styles.page()}>
+      <header {...styles.header()}>
+        <Logo />
+      </header>
+      <main {...styles.main()}>
+        {sent ? (
+          <div {...styles.intro()}>
+            <h1 {...styles.title()}>Check your email</h1>
+            <p {...styles.subtitle()}>We sent a sign-in link to {email}.</p>
+            <button {...styles.help()} onClick={() => setSent(false)} type="button">
+              Use a different email
+            </button>
+          </div>
+        ) : (
+          <form
+            {...styles.form()}
+            onSubmit={(event) => {
+              event.preventDefault()
+              setSent(true)
+            }}
+          >
+            <div {...styles.intro()}>
+              <h1 {...styles.title()}>Welcome to Zyzz</h1>
+              <p {...styles.subtitle()}>Log in or sign up to get started.</p>
+            </div>
+            <label {...styles.field()}>
+              <span {...styles.label()}>Email</span>
+              <input
+                {...styles.input()}
+                autoComplete="email"
+                onChange={(event) => setEmail(event.target.value)}
+                type="email"
+                value={email}
+              />
+            </label>
+            <button {...styles.button()} disabled={!email.includes('@')} type="submit">
+              Continue
+            </button>
+          </form>
+        )}
+      </main>
+      <footer {...styles.footer()}>
+        <a {...styles.help()} href="https://zyzz.style/docs" rel="noreferrer" target="_blank">
+          Help
+        </a>
         <nav aria-label="Resources" {...styles.links()}>
-          <a {...styles.button()} href="https://zyzz.style/docs/introduction/getting-started" target="_blank" rel="noreferrer">
-            See the docs <span aria-hidden="true">↗</span>
-          </a>
-          <a {...styles.button(styles.secondary())} href="https://github.com/wevm/zyzz" target="_blank" rel="noreferrer">
-            View on GitHub <span aria-hidden="true">↗</span>
-          </a>
+          {links.map((link) => (
+            <a key={link.label} {...styles.link()} href={link.href} rel="noreferrer" target="_blank">
+              {link.label}
+            </a>
+          ))}
         </nav>
-      </article>
-    </main>
+      </footer>
+    </div>
   )
 }
 
 namespace styles {
   export const page = style({
-    backgroundColor: 'canvas',
+    backgroundColor: 'paper',
+    color: 'ink',
     display: 'grid',
+    gridTemplateRows: 'auto 1fr auto',
     minHeight: '100vh !custom',
+  })
+
+  export const header = style({
+    padding: '24px !custom',
+    '& svg': { display: 'block', height: '20px !custom', width: '73px !custom' },
+  })
+
+  export const main = style({
+    display: 'grid',
     padding: '24px !custom',
     placeItems: 'center',
   })
 
-  export const card = style({
-    backgroundColor: 'paper',
-    border: '1px solid',
-    borderColor: 'border',
-    borderRadius: '24px',
-    color: 'ink',
+  export const form = style({
     display: 'grid',
-    gap: '32px !custom',
-    maxWidth: '560px !custom',
-    padding: '32px !custom',
+    gap: '24px !custom',
+    maxWidth: '400px !custom',
     width: '100% !custom',
-    '@media (max-width: 480px)': { gap: '24px !custom', padding: '20px !custom' },
+  })
+
+  export const intro = style({
+    display: 'grid',
+    gap: '8px !custom',
+    justifyItems: 'center',
+    textAlign: 'center',
   })
 
   export const title = style({
-    alignItems: 'center',
-    color: 'accent',
-    display: 'flex',
-    flexWrap: 'wrap',
-    fontSize: 'clamp(24px, 5vw, 32px)',
-    fontWeight: 500,
-    gap: '12px !custom',
-    justifyContent: 'center',
-    letterSpacing: '-0.04em',
-    margin: '8px 0 !custom',
-    '& svg': { color: 'ink', width: '104px !custom', height: '32px !custom' },
+    fontSize: '24px',
+    fontWeight: 600,
+    letterSpacing: '-0.02em',
+    margin: '0 !custom',
   })
 
-  export const steps = style({
+  export const subtitle = style({ color: 'muted', fontSize: '16px' })
+
+  // The label sits inside the field, and the whole field takes the focus ring.
+  export const field = style({
+    backgroundColor: 'canvas',
+    border: '1.5px solid',
+    borderColor: 'border',
+    borderRadius: '10px',
+    cursor: 'text',
     display: 'grid',
-    gap: '8px !custom',
-    listStyle: 'none',
-    margin: '0 !custom',
+    gap: '2px !custom',
+    padding: '8px 14px !custom',
+    transition: 'border-color 150ms',
+    ':hover': { borderColor: 'muted' },
+    ':focus-within': { borderColor: 'ink' },
+  })
+
+  export const label = style({ color: 'muted', fontSize: '12px' })
+
+  export const input = style({
+    backgroundColor: 'transparent',
+    border: 'none',
+    color: 'ink',
+    font: 'inherit',
+    fontSize: '16px',
+    outline: 'none',
     padding: '0 !custom',
   })
 
-  export const step = style({
-    alignItems: 'center',
-    border: '1px solid',
-    borderColor: 'border',
-    borderRadius: '8px',
-    display: 'flex',
-    fontSize: '14px',
-    gap: '12px !custom',
-    lineHeight: 1.6,
-    padding: '16px !custom',
-    ':first-child': { borderStartStartRadius: '16px', borderStartEndRadius: '16px' },
-    ':last-child': { borderEndStartRadius: '16px', borderEndEndRadius: '16px' },
-    '@media (max-width: 480px)': { fontSize: '13px', padding: '12px !custom' },
-  })
-
-  export const check = style({
-    backgroundColor: 'accent',
-    borderRadius: '50%',
-    color: 'onAccent',
-    display: 'grid',
-    flexShrink: 0,
-    height: '24px !custom',
-    placeItems: 'center',
-    width: '24px !custom',
-  })
-
-  export const links = style({
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '12px !custom',
-  })
-
-  // Selectors are emitted as ordinary CSS.
   export const button = style({
-    alignItems: 'center',
-    backgroundColor: 'accent',
-    border: '1px solid transparent',
-    borderRadius: '8px',
-    color: 'onAccent',
-    display: 'flex',
-    flex: '1 1 auto',
-    fontSize: '14px',
-    fontWeight: 600,
-    gap: '12px !custom',
-    justifyContent: 'space-between',
-    padding: '14px 20px !custom',
-    textDecoration: 'none',
-    ':hover': { backgroundColor: 'accentHover' },
+    backgroundColor: 'ink',
+    backgroundImage: 'linear-gradient(rgb(255 255 255 / 0.12), transparent)',
+    border: 'none',
+    borderRadius: '999px',
+    color: 'canvas',
+    cursor: 'pointer',
+    fontSize: '16px',
+    fontWeight: 500,
+    height: '52px !custom',
+    ':disabled': { color: 'muted', cursor: 'not-allowed' },
     ':focus-visible': { outline: '2px solid', outlineColor: 'accent', outlineOffset: '3px' },
-    '@media (max-width: 480px)': { fontSize: '13px', padding: '12px !custom' },
   })
 
-  export const secondary = style({
-    backgroundColor: 'canvas',
-    borderColor: 'border',
+  export const footer = style({
+    alignItems: 'center',
+    display: 'grid',
+    gap: '16px !custom',
+    justifyItems: 'center',
+    padding: '24px 24px 48px !custom',
+  })
+
+  export const help = style({
+    backgroundColor: 'subtle',
+    border: 'none',
+    borderRadius: '999px',
     color: 'ink',
+    cursor: 'pointer',
+    fontSize: '15px',
+    fontWeight: 500,
+    padding: '8px 16px !custom',
+    textDecoration: 'none',
     ':hover': { backgroundColor: 'border' },
+    ':focus-visible': { outline: '2px solid', outlineColor: 'accent', outlineOffset: '2px' },
+  })
+
+  export const links = style({ display: 'flex', gap: '12px !custom' })
+
+  export const link = style({
+    color: 'muted',
+    fontSize: '12px',
+    textDecoration: 'none',
+    ':hover': { color: 'ink' },
   })
 }
 `,
