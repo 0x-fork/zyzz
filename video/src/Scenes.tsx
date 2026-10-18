@@ -31,6 +31,7 @@ import {
   heroSteps,
   ink,
   mono,
+  nativeSteps,
   promptSteps,
   sans,
   tailwindSteps,
@@ -1109,11 +1110,15 @@ export function Native() {
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
   const split = 860
-  const web = spring({ config: { damping: 16 }, fps, frame: frame - beats(7) })
+  const web = spring({
+    config: { damping: 16 },
+    fps,
+    frame: frame - nativeSteps.web,
+  })
   const native = spring({
     config: { damping: 16 },
     fps,
-    frame: frame - beats(8),
+    frame: frame - nativeSteps.native,
   })
   return (
     <AbsoluteFill>

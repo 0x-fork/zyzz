@@ -8,6 +8,7 @@ import {
   benchSteps,
   cssSteps,
   heroSteps,
+  nativeSteps,
   promptSteps,
   scenes,
   tailwindSteps,
@@ -74,6 +75,10 @@ const cues: Partial<Record<keyof typeof scenes, readonly Cue[]>> = {
       1.6,
     ),
     { at: heroSteps.install, kind: 'pop', note: 4 },
+  ],
+  native: [
+    { at: nativeSteps.web, kind: 'pop', note: 2 },
+    { at: nativeSteps.native, kind: 'pop', note: 4 },
   ],
   prompt: [
     typed(

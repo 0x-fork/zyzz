@@ -97,6 +97,8 @@ export const benchSteps = {
   deliveryBars: beats(7.5),
 }
 
+export const nativeSteps = { native: beats(8), web: beats(7) }
+
 export const tailwindSteps = { rows: [4, 5, 6, 7].map(beats) }
 
 export const heroSteps = { install: beats(6), tagline: beats(3) }
