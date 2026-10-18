@@ -337,7 +337,7 @@ function snippet(text: string, terms: readonly string[]): string {
 }
 
 namespace styles {
-  export const backdrop = style({
+  export const backdrop = style(Dialog.Backdrop, {
     backdropFilter: 'blur(4px) !custom',
     backgroundColor: 'light-dark(rgb(0 0 0 / 0.2), rgb(0 0 0 / 0.6)) !custom',
     inset: 0,
@@ -345,8 +345,9 @@ namespace styles {
     transition: 'opacity 150ms',
     zIndex: 100,
     '@media (prefers-reduced-motion: reduce)': { transition: 'none' },
-    selectors: {
-      '&[data-starting-style], &[data-ending-style]': { opacity: 0 },
+    states: {
+      endingStyle: { opacity: 0 },
+      startingStyle: { opacity: 0 },
     },
   })
 
@@ -460,7 +461,7 @@ namespace styles {
     minWidth: 0,
   })
 
-  export const popup = style({
+  export const popup = style(Dialog.Popup, {
     backgroundColor: 'background.surface',
     border: '1px solid',
     borderColor: 'gray.400',
@@ -481,11 +482,9 @@ namespace styles {
     zIndex: 101,
     '@media (max-width: 640px)': { top: 4 },
     '@media (prefers-reduced-motion: reduce)': { transition: 'none' },
-    selectors: {
-      '&[data-starting-style], &[data-ending-style]': {
-        opacity: 0,
-        scale: '0.98 !custom',
-      },
+    states: {
+      endingStyle: { opacity: 0, scale: '0.98 !custom' },
+      startingStyle: { opacity: 0, scale: '0.98 !custom' },
     },
   })
 
