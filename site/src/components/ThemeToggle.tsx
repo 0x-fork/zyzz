@@ -64,7 +64,7 @@ namespace styles {
 
   export const icon = style({ height: 4, width: 4 })
 
-  export const option = style({
+  export const option = style(Radio.Root, {
     alignItems: 'center',
     border: '1px solid transparent',
     borderRadius: '9999px !custom',
@@ -82,10 +82,12 @@ namespace styles {
       outlineOffset: '2px',
     },
     '@media (prefers-reduced-motion: reduce)': { transition: 'none' },
-    '&[data-checked]': {
-      backgroundColor: 'grayAlpha.200',
-      borderColor: 'gray.400',
-      color: 'foreground',
+    states: {
+      checked: {
+        backgroundColor: 'grayAlpha.200',
+        borderColor: 'gray.400',
+        color: 'foreground',
+      },
     },
   })
 }
