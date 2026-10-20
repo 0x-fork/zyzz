@@ -1,6 +1,6 @@
 # Launch Video
 
-A Remotion composition of the Zyzz launch video: eight sections that follow the launch thread, timed to a 136.08 BPM soundtrack.
+A Remotion composition of the Zyzz launch video: nine sections that follow the launch thread, timed to a 136.08 BPM soundtrack.
 
 ## Render
 
@@ -24,8 +24,8 @@ To prepare `audio/instrumental.wav` from a local copy of the track:
 # 1. Separate the vocals with Demucs
 python -m demucs --two-stems=vocals -n htdemucs -o stems song.mp3
 
-# 2. Cut 31 bars at 136.08 BPM, starting one bar before the first chorus
-ffmpeg -ss 143.446 -t 54.674 -i stems/htdemucs/song/no_vocals.wav audio/instrumental.wav
+# 2. Cut 36 bars at 136.08 BPM, starting four bars before the first chorus
+ffmpeg -ss 141.683 -t 63.492 -i stems/htdemucs/song/no_vocals.wav audio/instrumental.wav
 ```
 
-Scene starts, annotation beats, and sound cues all derive from the beat grid in `src/Theme.ts`, so frame 0 must land on the downbeat at 143.446 seconds.
+Scene starts, annotation beats, and sound cues all derive from the beat grid in `src/Theme.ts`, so frame 0 must land on the downbeat at 141.683 seconds.

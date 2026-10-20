@@ -29,13 +29,14 @@ export const sans = '"Geist", -apple-system, system-ui, sans-serif'
 // Frame lines, in canvas pixels.
 export const frame = { bottom: 990, left: 90, right: 1830, top: 90 }
 
-// The soundtrack ("Find Yourself" instrumental, from the drop before the first chorus) runs at 136.08 BPM, and frame 0 is a downbeat.
+// The soundtrack ("Find Yourself" instrumental, from four bars before the first chorus) runs at 136.08 BPM, and frame 0 is a downbeat.
 export const beat = (60 / 136.08) * 30
 
 /** Frame of the `n`th beat, rounded to the nearest frame. */
 export const beats = (n: number) => Math.round(n * beat)
 
 const bars = {
+  baseUi: 5,
   bench: 4,
   css: 5,
   hero: 3,
@@ -51,14 +52,12 @@ const order = [
   'css',
   'tokens',
   'variants',
+  'baseUi',
   'native',
   'bench',
   'tailwind',
   'prompt',
 ] as const
-
-/** Number of numbered sections after the intro, for the `02 / 10` counters. */
-export const sections = order.length
 
 // Scenes start on bar lines of the soundtrack.
 export const scenes = (() => {
@@ -89,6 +88,13 @@ export const cssSteps = {
 export const tokenSteps = { lint: beats(14), off: beats(11), ok: beats(8) }
 
 export const variantSteps = { error: beats(11), ok: beats(9) }
+
+export const baseUiSteps = {
+  disabled: beats(13),
+  highlighted: beats(7),
+  selected: beats(10),
+  summary: beats(16),
+}
 
 export const benchSteps = {
   build: beats(10),

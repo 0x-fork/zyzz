@@ -4,6 +4,7 @@ import * as Http from 'node:http'
 import * as Path from 'node:path'
 import { chromium } from 'playwright'
 import {
+  baseUiSteps,
   beat,
   benchSteps,
   cssSteps,
@@ -52,6 +53,13 @@ const bars = (at: number, from: number): Cue[] =>
 
 // Frames within each scene. Sounds mark annotations, the install command, chart bars, and typed text.
 const cues: Partial<Record<keyof typeof scenes, readonly Cue[]>> = {
+  baseUi: [
+    { at: baseUiSteps.highlighted, kind: 'pop', note: 0 },
+    { at: baseUiSteps.selected, kind: 'pop', note: 2 },
+    { at: baseUiSteps.disabled, kind: 'pop', note: 4 },
+    { at: baseUiSteps.summary, kind: 'plink' },
+    typed(baseUiSteps.summary, 'Every state checked against Base UI.', 2.4),
+  ],
   bench: [
     ...bars(benchSteps.buildBars, 0),
     ...bars(benchSteps.deliveryBars, 2),

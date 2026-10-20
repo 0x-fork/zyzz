@@ -21,8 +21,9 @@ import {
   geist,
   Phone,
 } from './Geist.js'
-import { BrandIcon } from './Brands.js'
+import { type Brand, BrandIcon } from './Brands.js'
 import {
+  baseUiSteps,
   beat,
   beats,
   benchSteps,
@@ -206,11 +207,7 @@ function InlineCode(props: { children: string }) {
 }
 
 /** Brand mark beside its name, for title-card illustrations. */
-function Tool(props: {
-  color: string
-  label: string
-  name: 'mdn' | 'oxlint' | 'rust' | 'typescript' | 'w3c'
-}) {
+function Tool(props: { color: string; label: string; name: Brand }) {
   return (
     <span
       style={{
@@ -1103,6 +1100,286 @@ export function Variants() {
         x={split}
       />
     </AbsoluteFill>
+  )
+}
+
+// State descriptions are quoted from Base UI's documented Select.Item data attributes.
+const baseUiStates = [
+  {
+    attribute: 'data-highlighted',
+    description: 'Present when the select item is highlighted.',
+    key: 'highlighted',
+  },
+  {
+    attribute: 'data-selected',
+    description: 'Present when the select item is selected.',
+    key: 'selected',
+  },
+  {
+    attribute: 'data-disabled',
+    description: 'Present when the select item is disabled.',
+    key: 'disabled',
+  },
+] as const
+
+const fruits = ['Apple', 'Banana', 'Cherry'] as const
+
+export function BaseUi() {
+  const frame = useCurrentFrame()
+  const at = baseUiSteps
+  const split = 1020
+  const highlight = step(frame, at.highlighted, 0, 1, beats(0.5))
+  const point = step(frame, at.highlighted - beats(1), 0, 1, beats(1))
+  const selected = step(frame, at.selected, 0, 1, beats(0.5))
+  const disabled = step(frame, at.disabled, 0, 1, beats(0.5))
+  const steps = baseUiStates.map((state) => ({ ...state, at: at[state.key] }))
+  const current = [...steps].reverse().find((state) => frame >= state.at)
+  const summary = fade(frame, at.summary, 6)
+  return (
+    <AbsoluteFill>
+      <Title
+        extra={<Tool color="#007FFF" label="Base UI" name="mui" />}
+        index={0}
+        sub="Style each part by its documented states, checked against Base UI's data attributes."
+        title={[
+          { text: 'Built for ' },
+          { blue: true, text: 'Base UI' },
+          { text: '.' },
+        ]}
+      />
+      <Rule
+        at={split}
+        from={box.top}
+        progress={useDraw(beats(3))}
+        to={box.bottom}
+      />
+      <Panel
+        at={beats(3)}
+        lines={[
+          { text: "import { Select } from '@base-ui/react/select'" },
+          { text: "import { style } from 'zyzz/base-ui/react'" },
+          { text: '' },
+          { text: 'const item = style(Select.Item, {' },
+          { text: '  states: {' },
+          {
+            highlight: { at: at.highlighted },
+            text: "    highlighted: { background: '#0071f6' },",
+          },
+          {
+            highlight: { at: at.selected },
+            text: '    selected: { fontWeight: 700 },',
+          },
+          {
+            highlight: { at: at.disabled },
+            text: '    disabled: { opacity: 0.5 },',
+          },
+          { text: '  },' },
+          { text: '})' },
+        ]}
+        size={28}
+        stagger={beat / 4}
+        title="Select.tsx"
+        top={160}
+        width={split - box.left}
+        x={box.left}
+      />
+      <div
+        style={{
+          alignItems: 'center',
+          display: 'flex',
+          fontFamily: sans,
+          fontSize: 30,
+          height: 76,
+          left: box.left + inset,
+          position: 'absolute',
+          top: 800,
+          width: split - box.left - inset * 2,
+        }}
+      >
+        <div
+          style={{
+            background: ink.successBg,
+            bottom: 0,
+            left: -inset,
+            opacity: summary,
+            position: 'absolute',
+            right: -inset,
+            top: 0,
+          }}
+        />
+        <span
+          style={{ display: 'flex', marginRight: 20, position: 'relative' }}
+        >
+          <Mark at={at.summary} frame={frame} ok size={34} />
+        </span>
+        <span style={{ position: 'relative' }}>
+          <Typed
+            at={at.summary}
+            perFrame={2.4}
+            segments={[
+              {
+                color: ink.successText,
+                text: 'Every state checked against Base UI.',
+              },
+            ]}
+          />
+        </span>
+      </div>
+      <Canvas
+        at={beats(4)}
+        style={{
+          height: 800,
+          left: split + 48,
+          top: 150,
+          width: box.right - split - 96,
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            fontFamily: geist.sans,
+            gap: 14,
+            left: 110,
+            position: 'absolute',
+            top: 90,
+            width: 400,
+          }}
+        >
+          <div
+            style={{
+              alignItems: 'center',
+              background: geist.surface,
+              border: `1px solid ${geist.border}`,
+              borderRadius: 12,
+              color: geist.fg,
+              display: 'flex',
+              fontSize: 28,
+              justifyContent: 'space-between',
+              padding: '16px 22px',
+            }}
+          >
+            Apple
+            <span style={{ color: geist.muted, fontSize: 22 }}>▾</span>
+          </div>
+          <div
+            style={{
+              background: geist.surface,
+              border: `1px solid ${geist.border}`,
+              borderRadius: 14,
+              boxShadow: '0 16px 40px rgba(0, 0, 0, 0.6)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              padding: 8,
+              position: 'relative',
+            }}
+          >
+            {fruits.map((fruit) => {
+              const lit = fruit === 'Banana' ? highlight : 0
+              const chosen = fruit === 'Apple' ? selected : 0
+              const off = fruit === 'Cherry' ? disabled : 0
+              return (
+                <div
+                  key={fruit}
+                  style={{
+                    alignItems: 'center',
+                    background: lit
+                      ? `rgba(0, 113, 246, ${lit})`
+                      : 'transparent',
+                    borderRadius: 8,
+                    color: lit > 0.5 ? '#fff' : geist.fg,
+                    display: 'flex',
+                    fontSize: 28,
+                    fontWeight: 400 + chosen * 300,
+                    gap: 14,
+                    opacity: 1 - off * 0.5,
+                    padding: '14px 18px',
+                  }}
+                >
+                  <span
+                    style={{ color: ink.green, opacity: chosen, width: 22 }}
+                  >
+                    ✓
+                  </span>
+                  {fruit}
+                </div>
+              )
+            })}
+            <Cursor
+              style={{
+                left: `${62 + (1 - point) * 60}%`,
+                opacity: point > 0 ? 1 : 0,
+                top: `${48 + (1 - point) * 70}%`,
+              }}
+            />
+          </div>
+        </div>
+        <div
+          style={{
+            height: 240,
+            left: 40,
+            position: 'absolute',
+            right: 40,
+            top: 520,
+          }}
+        >
+          {steps.map((state) =>
+            current === state ? (
+              <StateCard
+                attribute={state.attribute}
+                description={state.description}
+                key={state.key}
+                opacity={fade(frame, state.at, 10)}
+              />
+            ) : null,
+          )}
+        </div>
+      </Canvas>
+    </AbsoluteFill>
+  )
+}
+
+/** Reference card for a Base UI data attribute, as documented for Select.Item. */
+function StateCard(props: {
+  attribute: string
+  description: string
+  opacity: number
+}) {
+  return (
+    <div
+      style={{
+        background: geist.surface,
+        border: `1px solid ${geist.border}`,
+        borderRadius: 16,
+        display: 'flex',
+        flexDirection: 'column',
+        fontFamily: sans,
+        gap: 16,
+        opacity: props.opacity,
+        padding: '28px 34px',
+        transform: `translateY(${(1 - props.opacity) * 14}px)`,
+      }}
+    >
+      <span
+        style={{
+          alignItems: 'center',
+          color: geist.muted,
+          display: 'flex',
+          fontSize: 24,
+          gap: 12,
+        }}
+      >
+        <BrandIcon color="#007FFF" name="mui" size={28} />
+        Base UI · Select.Item
+      </span>
+      <span style={{ color: ink.blue, fontFamily: mono, fontSize: 40 }}>
+        [{props.attribute}]
+      </span>
+      <span style={{ color: ink.label, fontSize: 24 }}>
+        {props.description}
+      </span>
+    </div>
   )
 }
 

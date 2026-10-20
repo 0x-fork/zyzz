@@ -11,6 +11,7 @@ import {
 } from 'remotion'
 import { Exit, Frame } from './Frame.js'
 import {
+  BaseUi,
   Bench,
   Css,
   Hero,
@@ -41,13 +42,14 @@ const order = [
   { ...scenes.css, node: <Css /> },
   { ...scenes.tokens, node: <Tokens /> },
   { ...scenes.variants, node: <Variants /> },
+  { ...scenes.baseUi, node: <BaseUi /> },
   { ...scenes.native, node: <Native /> },
   { ...scenes.bench, node: <Bench /> },
   { ...scenes.tailwind, node: <Tailwind /> },
   { ...scenes.prompt, last: true, node: <Prompt /> },
 ]
 
-/** The launch video: eight sections over the soundtrack's beat grid. */
+/** The launch video: nine sections over the soundtrack's beat grid. */
 export function Video() {
   return (
     <AbsoluteFill style={{ background: ink.bg }}>
