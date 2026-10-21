@@ -7124,6 +7124,240 @@ describe('dynamic', () => {
       }
     })
 
+    test('writes fields that fill one declaration inline on elements styled alone', async () => {
+      const source = `import { style } from 'zyzz'
+export const App = (props: { label: string; x: number }) => <main>
+<div id="dot" {...styles.dot({ transform: \`translateX(\${props.x}px)\`, width: props.label as \`\${number}px\` })} />
+<div id="shared" className="shared" {...styles.dot({ transform: 'translateX(0px)', width: '3px' })} />
+<div id="later" {...styles.later({ width: props.label })} />
+<div id="hover" {...styles.hover({ width: props.label })} />
+<div id="mixed" {...styles.mixed({ opacity: 0.5, width: props.label as \`\${number}px\` })} />
+<div id="keyword" {...styles.keyword({ width: props.label })} />
+</main>
+namespace styles {
+  export const dot = style((values: { transform: \`translateX(\${number}px)\`; width: \`\${number}px\` }) => ({
+    display: 'block',
+    width: values.width,
+    transform: values.transform,
+  }))
+
+  export const later = style((values: { width: string }) => ({ width: values.width, minInlineSize: '20px' }))
+
+  export const hover = style((values: { width: string }) => ({ width: values.width, selectors: { '&:hover': { width: '1px' } } }))
+
+  export const mixed = style((values: { opacity: number; width: \`\${number}px\` }) => ({ opacity: values.opacity, width: values.width }))
+
+  export const keyword = style((values: { width: string }) => ({ width: values.width }))
+}`
+      const output = Transform.compile({ moduleId: 'App.tsx', source })
+
+      // Applications spread alone fold to their props, and other applications and fields that admit CSS-wide keywords keep variables.
+      expect(
+        output.code.slice(
+          output.code.indexOf('<main>'),
+          output.code.indexOf('</main>'),
+        ),
+      ).toMatchInlineSnapshot(`
+        "<main>
+        <div id="dot" {...(styles.dot?{className:"z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",style:{"transform":(\`translateX(\${props.x}px)\`)||"unset","width":(props.label as \`\${number}px\`)||"unset"}}:styles.dot())} />
+        <div id="shared" className="shared" {...styles.dot({ transform: 'translateX(0px)', width: '3px' })} />
+        <div id="later" {...styles.later({ width: props.label })} />
+        <div id="hover" {...styles.hover({ width: props.label })} />
+        <div id="mixed" {...(styles.mixed?{className:"z_l0kPgl7 z_l0kPgl8",style:{"--z-l0kPgl-styles-mixed-opacity":\`\${(0.5)}\`||" ","width":(props.label as \`\${number}px\`)||"unset"}}:styles.mixed())} />
+        <div id="keyword" {...styles.keyword({ width: props.label })} />
+        "
+      `)
+
+      const bundle = await Esbuild.build({
+        alias: { 'zyzz/runtime': Path.resolve('src/runtime/index.ts') },
+        bundle: true,
+        external: ['react'],
+        format: 'cjs',
+        jsx: 'automatic',
+        platform: 'node',
+        stdin: {
+          contents: output.code,
+          loader: 'tsx',
+          resolveDir: process.cwd(),
+        },
+        write: false,
+      })
+      const module = {
+        exports: {} as {
+          App: (props: { label: string; x: number }) => React.ReactNode
+        },
+      }
+
+      new Function('module', 'exports', 'require', bundle.outputFiles[0]!.text)(
+        module,
+        module.exports,
+        Module.createRequire(import.meta.url),
+      )
+
+      const browser = await chromium.launch()
+
+      try {
+        const page = await browser.newPage()
+        const render = async (props: { label: string; x: number }) => {
+          await page.setContent(
+            `<style>${output.css}</style>${Server.renderToStaticMarkup(React.createElement(module.exports.App, props))}`,
+          )
+
+          return page.locator('div').evaluateAll((elements) =>
+            elements.map((element) => {
+              const style = getComputedStyle(element)
+
+              return [element.id, style.transform, style.width, style.opacity]
+            }),
+          )
+        }
+
+        expect(await render({ label: '10px', x: 4 })).toMatchInlineSnapshot(`
+          [
+            [
+              "dot",
+              "matrix(1, 0, 0, 1, 4, 0)",
+              "10px",
+              "1",
+            ],
+            [
+              "shared",
+              "matrix(1, 0, 0, 1, 0, 0)",
+              "3px",
+              "1",
+            ],
+            [
+              "later",
+              "none",
+              "20px",
+              "1",
+            ],
+            [
+              "hover",
+              "none",
+              "10px",
+              "1",
+            ],
+            [
+              "mixed",
+              "none",
+              "10px",
+              "0.5",
+            ],
+            [
+              "keyword",
+              "none",
+              "10px",
+              "1",
+            ],
+          ]
+        `)
+
+        // An empty value leaves each property unset, as an invalid variable does.
+        expect(await render({ label: '', x: 4 })).toMatchInlineSnapshot(`
+          [
+            [
+              "dot",
+              "matrix(1, 0, 0, 1, 4, 0)",
+              "1264px",
+              "1",
+            ],
+            [
+              "shared",
+              "matrix(1, 0, 0, 1, 0, 0)",
+              "3px",
+              "1",
+            ],
+            [
+              "later",
+              "none",
+              "1264px",
+              "1",
+            ],
+            [
+              "hover",
+              "none",
+              "1264px",
+              "1",
+            ],
+            [
+              "mixed",
+              "none",
+              "1264px",
+              "0.5",
+            ],
+            [
+              "keyword",
+              "none",
+              "1264px",
+              "1",
+            ],
+          ]
+        `)
+      } finally {
+        await browser.close()
+      }
+    })
+
+    test('keeps the callable when a member read could replace the definition', () => {
+      const source = `import { style } from 'zyzz'
+const styles = {
+  dot: style((values: { width: string }) => ({ width: values.width })),
+}
+styles.dot = ((values: { width: string }) => ({ className: 'other', style: { height: values.width } })) as typeof styles.dot
+export const App = () => <div {...styles.dot({ width: '10px' })} />`
+      const output = Transform.compile({ moduleId: 'App.tsx', source })
+
+      expect(
+        output.code.slice(output.code.indexOf('<div')),
+      ).toMatchInlineSnapshot(`"<div {...styles.dot({ width: '10px' })} />"`)
+    })
+
+    test('keeps the variable when a later all resets the declaration', () => {
+      const source = `import { style } from 'zyzz'
+export const App = () => <div {...styles.reset({ width: '10px' })} />
+namespace styles {
+  export const reset = style((values: { width: string }) => ({ width: values.width, all: 'unset' }))
+}`
+      const output = Transform.compile({ moduleId: 'App.tsx', source })
+
+      const start = output.code.indexOf('<div')
+
+      expect(
+        output.code.slice(start, output.code.indexOf('\n', start)),
+      ).toMatchInlineSnapshot(`"<div {...styles.reset({ width: '10px' })} />"`)
+    })
+
+    test('keeps keyword templates and merged namespace members callable', () => {
+      const source = `import { style } from 'zyzz'
+export const A = () => <div {...styles.keyword({ width: 'inherit' })} />
+namespace styles {
+  export const keyword = style((values: { width: \`\${'in'}herit\` }) => ({ width: values.width }))
+
+  export const spaced = style((values: { width: \` \${'in'}herit \` }) => ({ width: values.width }))
+}
+export const C = () => <div {...styles.spaced({ width: ' inherit ' })} />
+export const B = () => <div {...merged.dot({ width: '10px' })} />
+namespace merged {
+  export const dot = style((values: { width: \`\${number}px\` }) => ({ width: values.width }))
+}
+namespace merged {
+  export const other = style({ color: 'red' })
+}`
+      const output = Transform.compile({ moduleId: 'App.tsx', source })
+      const lines = output.code
+        .split('\n')
+        .filter((line) => line.includes('<div'))
+
+      expect(lines).toMatchInlineSnapshot(`
+        [
+          "export const A = () => <div {...styles.keyword({ width: 'inherit' })} />",
+          "export const C = () => <div {...styles.spaced({ width: ' inherit ' })} />",
+          "export const B = () => <div {...merged.dot({ width: '10px' })} />",
+        ]
+      `)
+    })
+
     test('mixes bound theme references with static and dynamic declarations', () => {
       expect(
         Transform.compile({
@@ -7303,9 +7537,9 @@ describe('finalAcceptance', () => {
           ),
         ).toMatchInlineSnapshot(`
           [
-            "",
-            "",
-            "",
+            "none",
+            "clamp",
+            "add",
           ]
         `)
       } finally {

@@ -12,8 +12,8 @@ use indexmap::IndexMap;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
     Argument, CallExpression, Declaration, Expression, JSXAttributeItem, JSXAttributeName,
-    JSXElementName, ObjectPropertyKind, Program, PropertyKey, PropertyKind, Statement,
-    TSNamespaceDeclarationBody, UnaryOperator, VariableDeclarationKind,
+    JSXElementName, ObjectExpression, ObjectPropertyKind, Program, PropertyKey, PropertyKind,
+    Statement, TSNamespaceDeclarationBody, UnaryOperator, VariableDeclarationKind,
 };
 use oxc_semantic::Semantic;
 use oxc_span::{GetSpan, Span};
@@ -44,6 +44,22 @@ pub struct Application {
     pub start: u32,
     /// Whether the application is the only class source of a DOM element.
     pub terminal: bool,
+}
+
+/// One application of a dynamic definition with an object literal, spread alone onto a DOM
+/// element.
+#[derive(Clone, Copy, Debug)]
+pub struct Bound<'a> {
+    /// End of the callee expression.
+    pub callee_end: u32,
+    /// End of the call.
+    pub end: u32,
+    /// Whether every evaluation follows the definition's initialization.
+    pub initialized: bool,
+    /// Start of the call.
+    pub start: u32,
+    /// The authored values.
+    pub values: &'a ObjectExpression<'a>,
 }
 
 /// The value of an application's only argument property, `className`.
@@ -115,6 +131,8 @@ struct Candidate<'c, 'a> {
 /// What a lexical read is nested in.
 #[derive(Clone, Copy)]
 struct Read<'a> {
+    /// The values object of a one-argument call spread alone onto a DOM element.
+    bound: Option<&'a ObjectExpression<'a>>,
     deferred: bool,
     /// Parent of the identifier.
     parent: Option<AstKind<'a>>,
@@ -512,6 +530,7 @@ impl Walker<'_, '_> {
 
             let count = self.ancestors.len();
             let read = Read {
+                bound: bound(&self.ancestors),
                 deferred: self.ancestors.iter().any(defers),
                 grandparent: count
                     .checked_sub(3)
@@ -883,6 +902,126 @@ impl<'c, 'a> Applications<'c, 'a> {
         output
     }
 
+    /// Applications of each dynamic definition that bind an object literal on a DOM element alone,
+    /// by definition name, in candidate order.
+    pub fn bound(&self) -> FxHashMap<Arc<str>, Vec<Bound<'a>>> {
+        let mut output: FxHashMap<Arc<str>, Vec<Bound<'a>>> = FxHashMap::default();
+
+        if self.evaluation {
+            return output;
+        }
+
+        // Merged namespace declarations share one read list, so each name's reads are walked once.
+        let mut groups: IndexMap<&Arc<str>, Vec<&Candidate<'c, 'a>>, FxBuildHasher> =
+            IndexMap::default();
+
+        for candidate in &self.candidates {
+            groups.entry(&candidate.name).or_default().push(candidate);
+        }
+
+        for (name, candidates) in groups {
+            let reads = self
+                .references
+                .get(name)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let bindings: FxHashSet<u32> = candidates
+                .iter()
+                .map(|candidate| candidate.binding.start)
+                .collect();
+            let direct = match candidates.as_slice() {
+                [candidate] => candidate.direct.map(|call| (*candidate, call)),
+                _ => None,
+            };
+
+            // Any member read other than a call could replace the member, as `styles.dot = other` does.
+            if direct.is_none()
+                && !reads.iter().all(|reference| {
+                    bindings.contains(&reference.span.start)
+                        || reference.resolved
+                        || member_name(reference.parent, reference.span).is_some_and(
+                            |(_, member)| call_of(reference.grandparent, member).is_some(),
+                        )
+                })
+            {
+                continue;
+            }
+
+            // A member declared by two merged declarations has no single definition.
+            let mut members: FxHashMap<&str, Option<(&Candidate<'c, 'a>, &'c Call<'a>)>> =
+                FxHashMap::default();
+
+            if direct.is_none() {
+                for candidate in &candidates {
+                    for (member, call) in &candidate.members {
+                        members
+                            .entry(&**member)
+                            .and_modify(|entry| *entry = None)
+                            .or_insert(Some((*candidate, *call)));
+                    }
+                }
+            }
+
+            for reference in reads {
+                let Some(values) = reference.bound else {
+                    continue;
+                };
+
+                if bindings.contains(&reference.span.start) || reference.resolved {
+                    continue;
+                }
+
+                let (candidate, call, callee, application) = if let Some((candidate, call)) = direct
+                {
+                    (candidate, call, reference.span, reference.parent)
+                } else {
+                    let Some((member, span)) = member_name(reference.parent, reference.span) else {
+                        continue;
+                    };
+                    let Some(Some((candidate, call))) = members.get(member).copied() else {
+                        continue;
+                    };
+
+                    (candidate, call, span, reference.grandparent)
+                };
+
+                if call.slots.is_none()
+                    || call.recipe.is_some()
+                    || call.composition.is_some()
+                    || call.runtime_composition.is_some()
+                {
+                    continue;
+                }
+
+                let Some(span) = call_of(application, callee)
+                    .filter(|call| call.arguments.len() == 1)
+                    .map(|call| call.span)
+                else {
+                    continue;
+                };
+
+                // A merged namespace can exist before a member's declaration, so the guard's bare
+                // call would skip evaluating the authored values before it throws.
+                if candidate.namespace.is_some() && self.namespace_counts.get(name) != Some(&1) {
+                    continue;
+                }
+
+                output
+                    .entry(Arc::clone(&call.name))
+                    .or_default()
+                    .push(Bound {
+                        callee_end: callee.end,
+                        end: span.end,
+                        initialized: !reference.deferred && reference.span.start >= candidate.ready,
+                        start: span.start,
+                        values,
+                    });
+            }
+        }
+
+        output
+    }
+
     /// Every foldable application, in candidate order.
     pub fn find(&self) -> impl Iterator<Item = &Application> {
         let collected = if self.evaluation {
@@ -1027,6 +1166,44 @@ fn terminal(path: &[AstKind<'_>]) -> bool {
         }
         _ => false,
     }
+}
+
+/// The object literal of a one-argument application spread alone onto a DOM element.
+fn bound<'a>(path: &[AstKind<'a>]) -> Option<&'a ObjectExpression<'a>> {
+    let mut index = path.len().checked_sub(1)?;
+    let mut node = path.get(index)?.span();
+
+    if let Some(AstKind::StaticMemberExpression(member)) =
+        index.checked_sub(1).and_then(|at| path.get(at))
+        && member.object.span() == node
+    {
+        index -= 1;
+        node = member.span;
+    }
+
+    let call_index = index.checked_sub(1)?;
+    let AstKind::CallExpression(call) = *path.get(call_index)? else {
+        return None;
+    };
+    let [Argument::ObjectExpression(values)] = call.arguments.as_slice() else {
+        return None;
+    };
+
+    if call.optional || call.callee.span() != node {
+        return None;
+    }
+
+    let spread_index = call_index.checked_sub(1)?;
+    let AstKind::JSXSpreadAttribute(spread) = *path.get(spread_index)? else {
+        return None;
+    };
+
+    (spread.argument.span() == call.span
+        && alone(
+            spread_index.checked_sub(1).and_then(|at| path.get(at)),
+            spread.span,
+        ))
+    .then_some(&**values)
 }
 
 /// Matches `^class(?:Name)?$`.

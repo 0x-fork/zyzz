@@ -12,14 +12,16 @@ use indexmap::IndexMap;
 use oxc_ast::AstKind;
 use oxc_ast::ast::{
     Argument, ArrayExpressionElement, BindingPattern, Expression, ImportDeclarationSpecifier,
-    ImportOrExportKind, ObjectExpression, ObjectPropertyKind, Program, PropertyKey, Statement,
+    ImportOrExportKind, ObjectExpression, ObjectPropertyKind, Program, PropertyKey, PropertyKind,
+    Statement,
 };
 use oxc_span::{GetSpan, Span};
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
-use crate::compiler::internal::applications::{self, Application};
+use crate::compiler::internal::applications::{self, Application, Bound};
 use crate::compiler::internal::contributions::Factory;
+use crate::compiler::internal::dynamic;
 use crate::compiler::internal::expression::unwrap;
 use crate::compiler::internal::packed_styles;
 use crate::compiler::internal::statics::key_literal;
@@ -481,6 +483,107 @@ fn json_class(classes: &IndexMap<Arc<str>, String, FxBuildHasher>, name: &str) -
         .map_or_else(|| "undefined".to_owned(), |value| quote(value))
 }
 
+/// Folds a dynamic application into its props, writing each field that fills one declaration to
+/// that property and each other field to its private variable.
+///
+/// Values keep their authored text and order, so edits inside them still apply. An empty string
+/// writes `unset` to a property, the value a declaration takes when its variable is invalid at
+/// computed-value time, and a space to a variable, as the generated callable does. The emitted rule
+/// still reads the variable of an inlined field, which no folded application assigns.
+fn fold_bound(
+    module: &mut Edits<'_>,
+    source: &str,
+    application: &Bound<'_>,
+    slots: &dynamic::Slots,
+    properties: &js::Record<&str>,
+    class_name: &str,
+) -> Result<()> {
+    // Each field's key with its text before and after the authored value.
+    let mut fields: SmallVec<[(&str, String, &str, Span); 4]> = SmallVec::new();
+    let mut seen: FxHashSet<&str> = FxHashSet::default();
+
+    for property in &application.values.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+            return Ok(());
+        };
+
+        if property.computed || property.method || property.kind != PropertyKind::Init {
+            return Ok(());
+        }
+
+        let key = match &property.key {
+            PropertyKey::StaticIdentifier(identifier) => identifier.name.as_str(),
+            PropertyKey::StringLiteral(literal) => literal.value.as_str(),
+            _ => return Ok(()),
+        };
+        let Some(slot) = slots.get(key) else {
+            return Ok(());
+        };
+
+        if !seen.insert(key) {
+            return Ok(());
+        }
+
+        let field = match properties.get(key) {
+            Some(target) => (
+                key,
+                format!("{}:(", quote(target)),
+                ")||\"unset\"",
+                property.value.span(),
+            ),
+            None => (
+                key,
+                format!("{}:`${{(", quote(&slot.name)),
+                ")}`||\" \"",
+                property.value.span(),
+            ),
+        };
+
+        fields.push(field);
+    }
+
+    if fields.len() != slots.len() || properties.is_empty() {
+        return Ok(());
+    }
+
+    let callee = source
+        .get(application.start as usize..application.callee_end as usize)
+        .unwrap_or_default();
+    let mut previous = application.start;
+    let mut closing = "";
+
+    for (index, (_, opening, close, value)) in fields.iter().enumerate() {
+        let mut text = String::with_capacity(callee.len() + class_name.len() + opening.len() + 24);
+
+        if index == 0 {
+            if application.initialized {
+                text.push('(');
+            } else {
+                // Keep a callable guard so bundlers also keep failures before initialization.
+                let _ = write!(text, "({callee}?");
+            }
+
+            let _ = write!(text, "{{className:{class_name},style:{{");
+        } else {
+            text.push_str(closing);
+            text.push(',');
+        }
+
+        text.push_str(opening);
+        module.overwrite(previous, value.start, text)?;
+        previous = value.end;
+        closing = close;
+    }
+
+    let suffix = if application.initialized {
+        format!("{closing}}}}})")
+    } else {
+        format!("{closing}}}}}:{callee}())")
+    };
+
+    module.overwrite(previous, application.end, suffix)
+}
+
 /// Locates emitted declarations, skipping selectors, conditions, and quoted CSS data. Offsets are
 /// UTF-8 byte offsets into `body`.
 fn declaration_starts(
@@ -835,9 +938,8 @@ pub fn compile<'a>(
             .map(|call| (call.start, call.end))
             .collect(),
     );
-    let composing = |application: &Application| {
-        compositions_intervals.contains(application.start, application.end)
-    };
+    let composing_span = |start: u32, end: u32| compositions_intervals.contains(start, end);
+    let composing = |application: &Application| composing_span(application.start, application.end);
     let html_starts: FxHashSet<u32> = extracted
         .calls
         .iter()
@@ -1123,6 +1225,58 @@ pub fn compile<'a>(
                     )?;
                 }
             }
+        }
+    }
+
+    let bound = local_applications
+        .as_ref()
+        .map(applications::Applications::bound)
+        .unwrap_or_default();
+
+    let named: FxHashMap<&str, &NamedStyle> = if bound.is_empty() {
+        FxHashMap::default()
+    } else {
+        styles
+            .iter()
+            .map(|style| (&*style.name, &**style))
+            .collect()
+    };
+
+    for call in &extracted.calls {
+        let (Some(slots), Some(applied)) = (&call.slots, bound.get(&call.name)) else {
+            continue;
+        };
+
+        if outputs.get(&*call.name).copied().unwrap_or_default() {
+            continue;
+        }
+
+        let Some(style) = named.get(&*call.name) else {
+            continue;
+        };
+        let properties = dynamic::inline(style, slots, &call.keywords);
+
+        if properties.is_empty() {
+            continue;
+        }
+
+        let class_name = json_class(&generator.classes, &call.name);
+
+        for application in applied {
+            if composing_span(application.start, application.end)
+                || html_starts.contains(&application.start)
+            {
+                continue;
+            }
+
+            fold_bound(
+                &mut module,
+                source,
+                application,
+                slots,
+                &properties,
+                &class_name,
+            )?;
         }
     }
 
