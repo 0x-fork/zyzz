@@ -247,6 +247,16 @@ export const third=configured.style({width:'calc(1px /* ] */ + 2px) !custom'});`
     )
   })
 
+  test('rejects fractional numeric variable keys', () => {
+    expect(() =>
+      PublicConfig.create({
+        vars: { spacing: { 0.5: '2px', 2.5: '10px' } },
+      } as never),
+    ).toThrowErrorMatchingInlineSnapshot(
+      `[Vars.InvalidError: ["spacing","0.5"]: Expected a nonempty variable key without dots or conditions.]`,
+    )
+  })
+
   test.each(['atomic', 'grouped'] as const)(
     'applies default layers to %s styles and recipes through source and packed configs',
     async (cssOutput) => {

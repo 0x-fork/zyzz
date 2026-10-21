@@ -435,4 +435,12 @@ describe('defineConfig', () => {
     // @ts-expect-error Unknown configuration options remain rejected.
     defineConfig({ unknown: true })
   })
+
+  test('rejects fractional numeric variable keys', () => {
+    // @ts-expect-error Dots separate variable references.
+    defineConfig({ vars: { spacing: { 0.5: '2px', 2.5: '10px' } } })
+    defineConfig({ vars: { spacing: { 0: '0px', 1: '4px' } } }).style({
+      gap: 1,
+    })
+  })
 })

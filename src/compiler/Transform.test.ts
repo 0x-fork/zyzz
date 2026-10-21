@@ -2046,6 +2046,18 @@ describe('compile', () => {
     )
   })
 
+  test('fractional numeric variable keys report their path', () => {
+    expect(() =>
+      Transform.compile({
+        moduleId: 'example/fractional.ts',
+        source:
+          "import { defineConfig } from 'zyzz';\nconst { style } = defineConfig({vars:{spacing:{0.5:'2px',2.5:'10px'}}});\nexport const props = style({gap:2.5})();",
+      }),
+    ).toThrowErrorMatchingInlineSnapshot(
+      `[Source.ExtractError: example/fractional.ts:55: ["spacing","0.5"]: Expected a nonempty variable key without dots or conditions.]`,
+    )
+  })
+
   test('fallback declarations retain importance, token identity, and element source maps', () => {
     const output = Transform.compile({
       moduleId: 'example/fallbacks.ts',

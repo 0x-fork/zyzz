@@ -280,6 +280,20 @@ type Extended<base, values> = {
       : never
 }
 
+/**
+ * Keys reserved for the reference separator, importance, and conditions.
+ * Numeric keys such as `0.5` are checked by their property name.
+ */
+type Reserved<key> = key extends string | number
+  ? `${key}` extends
+      | `${string}.${string}`
+      | `${string}!${string}`
+      | `@${string}`
+      | ''
+    ? true
+    : false
+  : false
+
 /** Compatible overrides and `null` removals at existing paths, plus new leaves and categories. */
 type Extension<base, values, typography extends boolean = false> = {
   readonly [key in keyof values]: key extends keyof base
@@ -300,11 +314,7 @@ type Extension<base, values, typography extends boolean = false> = {
               >
     : key extends 'containerNames'
       ? readonly string[]
-      : key extends
-            | `${string}.${string}`
-            | `${string}!${string}`
-            | `@${string}`
-            | ''
+      : Reserved<key> extends true
         ? typography extends true
           ? key extends Typography.Condition
             ? Validated<values[key], true>
@@ -402,11 +412,7 @@ type Validated<
                 ? value[key] extends readonly string[]
                   ? value[key]
                   : never
-                : key extends
-                      | `${string}.${string}`
-                      | `${string}!${string}`
-                      | `@${string}`
-                      | ''
+                : Reserved<key> extends true
                   ? never
                   : Validated<
                       value[key],
@@ -424,11 +430,7 @@ type Validated<
               : keyof value extends 'light' | 'dark'
                 ? Pair<value>
                 : {
-                    readonly [key in keyof value]: key extends
-                      | `${string}.${string}`
-                      | `${string}!${string}`
-                      | `@${string}`
-                      | ''
+                    readonly [key in keyof value]: Reserved<key> extends true
                       ? typography extends true
                         ? key extends Typography.Condition
                           ? Validated<value[key], true>
