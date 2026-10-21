@@ -69,6 +69,8 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   const servedShared = new WeakMap<Environment, string>()
   // Watcher events advance an environment's generation, which scopes memoized whole-project work.
   const generations = new WeakMap<Environment, number>()
+  // Modules whose last compile failed. A created file can satisfy one of their imports.
+  const failures = new WeakMap<Environment, Set<string>>()
   let devServer: ViteDevServer | undefined
   const watching = new Set<string>()
   // Chokidar matches its ignore patterns on every add, and each compile watches its whole closure.
@@ -80,7 +82,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     Environment,
     { files: Map<string, Edges>; key: string }
   >()
-  // A development entry's last output, reused until a watcher event or a recompiled graph.
+  // A development entry's last output, reused until a watcher event or a recompile of its module.
   const outputs = new WeakMap<
     Entry,
     {
@@ -201,6 +203,8 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         imports: Object.create(null),
         modules: Object.create(null),
         outcome: undefined,
+        pending: undefined,
+        stale: false,
       }
       projects.set(environment, value)
     }
@@ -211,50 +215,58 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
    * Development merges every module a transform reaches into one graph per environment, so
    * modules compile once per change instead of once per importer. A module's output depends only
    * on its own import closure, so the merged graph returns the output a closure compile would.
-   * While some other module fails, the requested closure compiles alone and reports only its own
-   * errors, as before.
+   * Transforms that merge changes in one event loop turn share one compile. While some other
+   * module fails, the requested closure compiles alone and reports only its own errors, as before.
    */
-  function compileProject(
+  async function compileProject(
     environment: Environment,
     input: Graph.compile.Options,
     id: string,
   ) {
     const value = project(environment)
-    let changed = value.outcome === undefined
+
+    if (value.outcome === undefined) value.stale = true
 
     for (const [module, source] of Object.entries(input.modules))
       if (value.modules[module] !== source) {
         value.modules[module] = source
-        changed = true
+        value.stale = true
       }
 
     for (const [module, resolutions] of Object.entries(input.imports ?? {}))
       if (!same(value.imports[module], resolutions)) {
         value.imports[module] = resolutions
-        changed = true
+        value.stale = true
       }
 
     for (const [module, contract] of Object.entries(input.contracts ?? {}))
       if (value.contracts[module] !== contract) {
         value.contracts[module] = contract
-        changed = true
+        value.stale = true
       }
 
-    if (changed)
-      value.outcome = (() => {
-        try {
-          return {
-            result: value.compiler.compile({
-              ...input,
-              contracts: value.contracts,
-              imports: value.imports,
-              modules: value.modules,
-            }),
-          }
-        } catch (error) {
-          return { error }
-        }
-      })()
+    if (value.stale)
+      await (value.pending ??= new Promise<void>((resolve) =>
+        setImmediate(() => {
+          value.pending = undefined
+          value.stale = false
+          value.outcome = (() => {
+            try {
+              return {
+                result: value.compiler.compile({
+                  ...input,
+                  contracts: value.contracts,
+                  imports: value.imports,
+                  modules: value.modules,
+                }),
+              }
+            } catch (error) {
+              return { error }
+            }
+          })()
+          resolve()
+        }),
+      ))
 
     const outcome = value.outcome!
 
@@ -263,6 +275,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
 
     return value.fallback.compile(input)
   }
+
   const discoveries = new WeakMap<Environment, Promise<Map<string, string>>>()
   // Sources compiled in every graph: stylesheet contributions, and in builds, selector
   // interpolations of style definitions.
@@ -279,6 +292,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
   const roots = new Map<string, string | undefined>()
   const lazyImports = new WeakMap<Parser.ParseResult, string[]>()
   const nestedPackages = new Map<string, boolean>()
+  const contributions = new Map<string, boolean>()
   let directories: readonly string[]
   // The directories discovery walks, and the include patterns that narrow it.
   let scopes: readonly string[]
@@ -400,39 +414,61 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         const sources = new Map<string, string>()
         const eagerFiles = new Set<string>()
         const visited = new Set<string>()
+        const files: string[] = []
 
         contributionFiles.set(environment, eagerFiles)
 
-        async function collect(directory: string): Promise<void> {
-          if (visited.has(directory)) return
+        // Discovery runs while the server transforms its first requests, so sibling directories
+        // and file reads overlap. Files keep the walk's order, which orders the stylesheet's
+        // contributions.
+        async function collect(directory: string): Promise<readonly string[]> {
+          if (visited.has(directory)) return []
           visited.add(directory)
 
-          for (const item of await Fs.readdir(directory, {
-            withFileTypes: true,
-          })) {
-            if (skipped(item.name)) continue
+          const items = await Fs.readdir(directory, { withFileTypes: true })
+          const found = await Promise.all(
+            items.map((item) => {
+              if (skipped(item.name)) return []
 
-            const file = Path.join(directory, item.name)
+              const file = Path.join(directory, item.name)
 
-            if (item.isDirectory()) {
-              if (!nested(file)) await collect(file)
-            } else if (item.isFile() && eager(file, environment)) {
+              if (item.isDirectory()) return nested(file) ? [] : collect(file)
+              if (!item.isFile() || !eager(file, environment)) return []
+
               host.watch(file)
+              return [file]
+            }),
+          )
 
-              const source = await Fs.readFile(file, 'utf8')
-
-              sources.set(file, source)
-
-              if (
-                contributes(source) ||
-                (environment.mode === 'build' && interpolates(source))
-              )
-                eagerFiles.add(file)
-            }
-          }
+          return found.flat()
         }
 
-        for (const directory of scopes) await collect(directory)
+        for (const directory of scopes)
+          files.push(...(await collect(directory)))
+
+        // Reads stay in batches under low descriptor limits.
+        const texts: string[] = []
+
+        for (let start = 0; start < files.length; start += 64)
+          texts.push(
+            ...(await Promise.all(
+              files
+                .slice(start, start + 64)
+                .map((file) => Fs.readFile(file, 'utf8')),
+            )),
+          )
+
+        for (const [index, file] of files.entries()) {
+          const source = texts[index]!
+
+          sources.set(file, source)
+
+          if (
+            contributes(environment, file, source) ||
+            (environment.mode === 'build' && interpolates(source))
+          )
+            eagerFiles.add(file)
+        }
 
         return sources
       })()
@@ -497,10 +533,27 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     )
   }
 
-  function contributes(source: string) {
-    const { program } = Parser.parseSync('source.tsx', source, {
-      sourceType: 'module',
-    })
+  /**
+   * Whether a discovered source calls a stylesheet contribution. Every environment discovers the
+   * same sources, and the compile that visits one reuses the syntax parsed here.
+   */
+  function contributes(environment: Environment, file: string, source: string) {
+    let value = contributions.get(source)
+
+    if (value === undefined) {
+      if (contributions.size > 4096) contributions.clear()
+
+      value = scanContributions(
+        snapshot(environment).parse({ moduleId: sourceId(file), source })
+          .program,
+      )
+      contributions.set(source, value)
+    }
+
+    return value
+  }
+
+  function scanContributions(program: Parser.ParseResult['program']) {
     const imports = new Map<number, string>()
 
     for (const node of program.body) {
@@ -689,6 +742,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         files.add(file)
       }
       entries(environment).delete(file)
+      failures.get(environment)?.delete(file)
       snapshot(environment).delete(file, sourceId(file))
       identities.delete(file)
     }
@@ -705,7 +759,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       sources.set(file, source)
 
       if (
-        contributes(source) ||
+        contributes(environment, file, source) ||
         (environment.mode === 'build' && interpolates(source))
       )
         contributionFiles.get(environment)?.add(file)
@@ -725,7 +779,10 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     const current = projects.get(entry.environment)?.outcome
 
     // Without a watcher event the closure is unchanged, so a stylesheet load after its
-    // transform reuses the output while the merged graph has not recompiled.
+    // transform reuses the output while the merged graph keeps the module's compiled output.
+    // Merging other modules leaves it, unless one is code the module's own compile had read
+    // from disk. The shared stylesheet reads every module merged so far, so it waits for an
+    // unchanged graph.
     if (
       memo &&
       !everything &&
@@ -734,13 +791,34 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       (code === undefined || code === memo.code) &&
       current &&
       'result' in current &&
-      current.result === memo.result
+      (allSources
+        ? current.result === memo.result
+        : current.result.modules[sourceId(entry.file)] ===
+          memo.result.modules[sourceId(entry.file)])
     ) {
       for (const file of entry.files) host.watch(file)
       return memo.output
     }
 
-    const output = await compileEntry(entry, host, code, allSources, everything)
+    let failed = failures.get(entry.environment)
+    if (!failed) {
+      failed = new Set()
+      failures.set(entry.environment, failed)
+    }
+
+    const output = await compileEntry(
+      entry,
+      host,
+      code,
+      allSources,
+      everything,
+    ).catch((error: unknown) => {
+      failed.add(entry.file)
+      throw error
+    })
+
+    failed.delete(entry.file)
+
     const outcome = projects.get(entry.environment)?.outcome
 
     // A concurrent compile can replace the merged result while this one renders, so only an
@@ -813,6 +891,35 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       }
 
       return { ...resolved, id: normalize(resolved.id) }
+    }
+
+    /**
+     * Starts the lookups of a module's static imports, which an ordered walk then settles. A
+     * lookup that fails leaves no cached result, so the walk reports it.
+     */
+    function prefetch(file: string, program: Parser.ParseResult['program']) {
+      for (const node of program.body) {
+        if (
+          node.type !== 'ImportDeclaration' &&
+          node.type !== 'ExportNamedDeclaration' &&
+          node.type !== 'ExportAllDeclaration'
+        )
+          continue
+
+        const specifier = node.source?.value
+
+        if (
+          specifier === undefined ||
+          (node.type === 'ImportDeclaration'
+            ? node.importKind
+            : node.exportKind) === 'type' ||
+          specifier === 'zyzz' ||
+          specifier.startsWith('zyzz/')
+        )
+          continue
+
+        resolve(specifier, file).catch(() => undefined)
+      }
     }
 
     // Optimized dependency sources by bundled file, indexed once per compile rather than
@@ -945,6 +1052,8 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         moduleId: id,
         source: text,
       })
+
+      prefetch(file, parsed.program)
 
       for (const node of parsed.program.body) {
         if (
@@ -1091,8 +1200,27 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
 
     const connected = new Set(files)
     const entryContracts = new Set(Object.keys(contracts))
+    // The merged development graph keeps every module an earlier compile reached, and a module's
+    // output depends only on its own closure. Contribution sources join through the shared
+    // stylesheet's compile, so a module compile neither waits for discovery nor walks them.
+    const merged = entry.environment.mode === 'dev' && !native && !everything
+    const sources =
+      merged && !allSources
+        ? new Map<string, string>()
+        : await discover(entry.environment, host)
 
-    for (const [file, source] of await discover(entry.environment, host)) {
+    // The walk below visits discovered sources in order, so their lookups start together first.
+    for (const [file, source] of sources)
+      if (allSources || contributionFiles.get(entry.environment)?.has(file))
+        prefetch(
+          file,
+          snapshot(entry.environment).parse({
+            moduleId: sourceId(file),
+            source,
+          }).program,
+        )
+
+    for (const [file, source] of sources) {
       if (files.has(file) && !allSources) continue
 
       const selected = contributionFiles.get(entry.environment)?.has(file)
@@ -1265,10 +1393,9 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       imports,
       modules,
     }
-    const result =
-      entry.environment.mode === 'dev' && !native && !everything
-        ? compileProject(entry.environment, input, sourceId(entry.file))
-        : entry.compiler.compile(input)
+    const result = merged
+      ? await compileProject(entry.environment, input, sourceId(entry.file))
+      : entry.compiler.compile(input)
 
     if (native) {
       const output = result.modules[sourceId(entry.file)]!
@@ -1730,7 +1857,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     deleted: string | undefined,
   ) {
     // Portable build adapters share this module and do not require Vite.
-    const { transformWithOxc } = await import('vite')
+    const { transformWithOxc, version } = await import('vite')
     const code = new Set<string>()
     const css = new Set<string>()
 
@@ -1821,6 +1948,12 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           timestamp,
           true,
         )
+
+        // An imported stylesheet accepts its own updates once a request transforms it. One that
+        // does not was never evaluated, as when a server renders without loading it, so the
+        // invalidation is the whole update.
+        if (module.type === 'js' && !module.isSelfAccepting) continue
+
         sheets.push(module)
       }
 
@@ -1833,11 +1966,18 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       sheets.length &&
       sheets.every((module) => module.isSelfAccepting)
     ) {
+      // The client matches a linked stylesheet by its URL and an imported one by its hot
+      // context, ignoring updates that name neither. Vite 8.3 registers hot contexts under
+      // module URLs, where earlier versions register the browser's `/@id/` URL.
+      const [major = 0, minor = 0] = version.split('.').map(Number)
+      const wrapped = major < 8 || (major === 8 && minor < 3)
       const updates = sheets.map((module) => {
         const path =
-          module.url.startsWith('/') || module.url.startsWith('.')
-            ? module.url
-            : `/@id/${module.url.replace('\0', '__x00__')}`
+          (wrapped || module.type === 'css') &&
+          !module.url.startsWith('/') &&
+          !module.url.startsWith('.')
+            ? `/@id/${module.url.replace('\0', '__x00__')}`
+            : module.url
 
         return {
           acceptedPath: path,
@@ -2095,18 +2235,33 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       if (!native && before && 'result' in before) {
         await updateDiscovery(this.environment, file, type)
 
-        // The edited module's own entry, or one whose closure reads it, merges its new source.
-        // A contribution source no module imports joins every closure.
+        // The edited module merges its new source through a compile of its own closure. A module
+        // its importers compile away, such as a theme, and a contribution source no module
+        // imports have no entry, so the compile anchors at the file. Other inputs, such as
+        // package files, recompile a closure that reads them.
+        const project = projects.get(this.environment)
         const first =
           state.get(file) ??
-          [...state.values()].find((entry) => entry.files.has(file)) ??
-          (eager(file, this.environment)
-            ? state.values().next().value
-            : undefined)
+          (eligible(file) &&
+          (Object.hasOwn(project?.modules ?? {}, sourceId(file)) ||
+            eager(file, this.environment))
+            ? {
+                compiler: compiler(this.environment),
+                environment: this.environment,
+                file,
+                files: new Set([file]),
+              }
+            : [...state.values()].find((entry) => entry.files.has(file)))
         if (!first && !removed.get(this.environment)?.has(file)) return modules
 
+        // A new source merges like an edit, so only the outputs it changes update. It can also
+        // satisfy an import that failed, which its own closure never reaches, so while a module
+        // fails, every closure recompiles.
         const compiled =
-          first && type === 'update' && eligible(file)
+          first &&
+          (type === 'update' ||
+            (type === 'create' && !failures.get(this.environment)?.size)) &&
+          eligible(file)
             ? await compile(first, {
                 resolve: resolver(this.environment),
                 watch: (file) => watch(server, file),
@@ -2496,6 +2651,10 @@ type Project = {
     | { readonly error: unknown }
     | { readonly result: Graph.compile.ReturnType }
     | undefined
+  /** The scheduled compile that merged changes wait for. */
+  pending: Promise<void> | undefined
+  /** Whether merged changes await a compile. */
+  stale: boolean
 }
 
 /** What an environment served when an edit arrived. */
