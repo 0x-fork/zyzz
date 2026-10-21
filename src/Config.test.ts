@@ -247,13 +247,51 @@ export const third=configured.style({width:'calc(1px /* ] */ + 2px) !custom'});`
     )
   })
 
-  test('rejects fractional numeric variable keys', () => {
+  test('resolves fractional numeric variable keys', () => {
+    const { style, vars } = PublicConfig.create({
+      id: 'fractional',
+      vars: { spacing: { 0: '0px', 0.5: '2px', 2.5: '10px' } },
+    })
+
+    expect(vars.spacing[0.5].path).toMatchInlineSnapshot(`"spacing.0.5"`)
+    expect(vars.spacing['2.5'].value).toMatchInlineSnapshot(`"10px"`)
+    expect(style({ gap: 0.5, padding: '2.5' }, { id: 'fractional' })())
+      .toMatchInlineSnapshot(`
+      {
+        "className": "z-style-id-fractional-fractional",
+      }
+    `)
+  })
+
+  test('rejects dotted variable categories, typography keys, and colliding paths', () => {
+    expect(() =>
+      PublicConfig.create({ vars: { 'spacing.x': '2px' } } as never),
+    ).toThrowErrorMatchingInlineSnapshot(
+      `[Vars.InvalidError: ["spacing.x"]: Variable categories and typography keys cannot contain dots.]`,
+    )
     expect(() =>
       PublicConfig.create({
-        vars: { spacing: { 0.5: '2px', 2.5: '10px' } },
+        vars: {
+          typography: { 'copy.5': { fontSize: '12px' } },
+        },
       } as never),
     ).toThrowErrorMatchingInlineSnapshot(
-      `[Vars.InvalidError: ["spacing","0.5"]: Expected a nonempty variable key without dots or conditions.]`,
+      `[Vars.InvalidError: ["typography","copy.5"]: Variable categories and typography keys cannot contain dots.]`,
+    )
+    expect(() =>
+      PublicConfig.create({
+        vars: { spacing: { '0.5': '2px', 0: { 5: '4px' } } },
+      }),
+    ).toThrowErrorMatchingInlineSnapshot(
+      `[Vars.InvalidError: ["spacing","0.5"]: Variable paths must join to distinct names.]`,
+    )
+    expect(() =>
+      PublicConfig.create({
+        id: 'dotted-weight',
+        vars: { fontWeight: { 'medium.5': '500' } },
+      } as never),
+    ).toThrowErrorMatchingInlineSnapshot(
+      `[Config.InvalidError: Font weight token fontWeight.medium.5 must be a number from 1 to 1000 or a fontWeight keyword, such as 500.]`,
     )
   })
 

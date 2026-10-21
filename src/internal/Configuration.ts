@@ -80,7 +80,7 @@ export function create(
           continue
 
         let leaf: unknown = theme.tokens
-        for (const key of path.split('.'))
+        for (const key of metadata.paths?.[path] ?? path.split('.'))
           leaf =
             leaf && typeof leaf === 'object'
               ? Object.getOwnPropertyDescriptor(leaf, key)?.value

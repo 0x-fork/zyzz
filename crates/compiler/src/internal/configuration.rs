@@ -188,7 +188,7 @@ fn normalize(value: &Data, mappings: Option<&Mappings>) -> Result<Arc<Definition
         };
 
         if weight
-            && let Some(Data::Token(reference)) = token::leaf(&theme.tokens, path)
+            && let Some(Data::Token(reference)) = token::leaf(&theme, path)
             && !token::accepts_reference(reference, "fontWeight")
         {
             return Err(invalid(format!(
