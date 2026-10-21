@@ -60,6 +60,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     ReturnType<typeof Snapshot.create>
   >()
   const states = new WeakMap<Environment, Map<string, Entry>>()
+  const anchors = new WeakMap<Environment, Map<string, Entry>>()
   const removed = new WeakMap<Environment, Set<string>>()
   const reads = new WeakMap<Environment, Map<string, string>>()
   const lookups = new WeakMap<Environment, Lookups>()
@@ -310,6 +311,22 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
     return value
   }
 
+  /**
+   * Compiles that edits anchored at modules Vite never transformed. Each keeps the closure it
+   * watches, so a later edit to a file only that closure reads, such as a package the module
+   * begins to import, finds a compile to rerun.
+   */
+  function anchored(environment: Environment) {
+    let value = anchors.get(environment)
+
+    if (!value) {
+      value = new Map()
+      anchors.set(environment, value)
+    }
+
+    return value
+  }
+
   function entries(environment: Environment) {
     let state = states.get(environment)
 
@@ -538,7 +555,10 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
    * same sources, and the compile that visits one reuses the syntax parsed here.
    */
   function contributes(environment: Environment, file: string, source: string) {
-    let value = contributions.get(source)
+    // TypeScript modules retry with assertion grammar where TSX syntax fails, so the same text can
+    // parse differently by extension.
+    const key = `${/\.[cm]?ts$/.test(file) ? 'ts' : 'tsx'}\0${source}`
+    let value = contributions.get(key)
 
     if (value === undefined) {
       if (contributions.size > 4096) contributions.clear()
@@ -547,7 +567,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         snapshot(environment).parse({ moduleId: sourceId(file), source })
           .program,
       )
-      contributions.set(source, value)
+      contributions.set(key, value)
     }
 
     return value
@@ -742,6 +762,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         files.add(file)
       }
       entries(environment).delete(file)
+      anchors.get(environment)?.delete(file)
       failures.get(environment)?.delete(file)
       snapshot(environment).delete(file, sourceId(file))
       identities.delete(file)
@@ -1893,6 +1914,30 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       if (left.code !== right.code) code.add(entry.file)
     }
 
+    // An environment loads the announced outputs when it next requests each module, which a server
+    // can postpone past later edits. Those edits compare against the announced outputs, so an
+    // update the environment has not loaded yet is not announced again.
+    for (const [entry, { code: current, css: stylesheet }] of served.entries) {
+      const id = sourceId(entry.file)
+      const next = after.modules[id]
+
+      if (!next) continue
+
+      if (stylesheet !== undefined && entry.css === stylesheet)
+        entry.css = next.css
+
+      if (current !== undefined && entry.code === current) {
+        entry.code = next.code
+        entry.imports = JSON.stringify(projects.get(environment)?.imports[id])
+      }
+    }
+
+    if (
+      served.shared !== undefined &&
+      servedShared.get(environment) === served.shared
+    )
+      servedShared.set(environment, after.sharedCss ?? '')
+
     const stylesheets = new Set<string>()
 
     if (deleted !== undefined) stylesheets.add(cssId(deleted))
@@ -2240,18 +2285,31 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
         // imports have no entry, so the compile anchors at the file. Other inputs, such as
         // package files, recompile a closure that reads them.
         const project = projects.get(this.environment)
-        const first =
-          state.get(file) ??
-          (eligible(file) &&
-          (Object.hasOwn(project?.modules ?? {}, sourceId(file)) ||
-            eager(file, this.environment))
-            ? {
-                compiler: compiler(this.environment),
-                environment: this.environment,
-                file,
-                files: new Set([file]),
-              }
-            : [...state.values()].find((entry) => entry.files.has(file)))
+        const first = (() => {
+          const own = state.get(file) ?? anchored(this.environment).get(file)
+          if (own) return own
+
+          if (
+            !eligible(file) ||
+            (!Object.hasOwn(project?.modules ?? {}, sourceId(file)) &&
+              !eager(file, this.environment))
+          )
+            return [
+              ...state.values(),
+              ...anchored(this.environment).values(),
+            ].find((entry) => entry.files.has(file))
+
+          const anchor = {
+            compiler: compiler(this.environment),
+            environment: this.environment,
+            file,
+            files: new Set([file]),
+          }
+
+          if (type !== 'delete') anchored(this.environment).set(file, anchor)
+
+          return anchor
+        })()
         if (!first && !removed.get(this.environment)?.has(file)) return modules
 
         // A new source merges like an edit, so only the outputs it changes update. It can also
@@ -2271,6 +2329,10 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
                 () => false,
               )
             : false
+
+        // No request reads an anchor's output, so its memo would only retain the merged result.
+        if (first && state.get(first.file) !== first) outputs.delete(first)
+
         const after = projects.get(this.environment)?.outcome
 
         if (compiled && after && 'result' in after)
@@ -2292,7 +2354,13 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       }))
 
       await updateDiscovery(this.environment, file, type)
-      const first = [...state.values()].find(
+
+      // Anchored compiles also read inputs, such as packages, that no served closure reaches.
+      const readers = [
+        ...state.values(),
+        ...anchored(this.environment).values(),
+      ]
+      const first = readers.find(
         (entry) => entry.files.has(file) || eager(file, this.environment),
       )
       if (!first && !removed.get(this.environment)?.has(file)) return modules
@@ -2351,7 +2419,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
       const ids = new Set<string>()
       if (type === 'delete') ids.add(cssId(file))
 
-      for (const entry of entries(this.environment).values()) {
+      for (const entry of readers) {
         if (!entry.files.has(file) && !eager(file, this.environment)) continue
 
         // Theme scopes affect CSS even when Vite's JavaScript import was erased.
@@ -2414,6 +2482,7 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
             files: new Set([anchor]),
           }
           entries(this.environment).set(anchor, entry)
+          anchors.get(this.environment)?.delete(anchor)
         }
       }
 
@@ -2489,6 +2558,9 @@ export function zyzz(options: zyzz.Options = {}): Plugin {
           files: new Set([id]),
         }
         state.set(id, entry)
+        // The entry supersedes the anchor an earlier edit created, whose closure read the source
+        // from disk rather than from the load hooks.
+        anchors.get(this.environment)?.delete(id)
         removed.get(this.environment)?.delete(id)
       }
 

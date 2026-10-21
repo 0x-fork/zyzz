@@ -118,6 +118,8 @@ mod compile {
 }
 
 mod create {
+    use std::fmt::Write as _;
+
     use compiler::compiler::handles::Compiler;
 
     #[test]
@@ -225,6 +227,135 @@ mod create {
             (edited["modules"]["button.ts"] == fresh["modules"]["button.ts"]).to_string(),
             @"true"
         );
+    }
+
+    /// A graph whose page styles itself with a constant that its index re-exports from the button
+    /// module.
+    fn reexported(size: &str) -> String {
+        let button = json(&format!(
+            "import {{style}} from 'zyzz';export const size='{size}';export const button=style({{padding:size}});"
+        ));
+        let index = json("export * from './button.js';export const label='Continue';");
+        let page = json(
+            "import {size,label} from './index.js';import {style} from 'zyzz';export const page=style({margin:size});export const element=label;",
+        );
+
+        format!(
+            r#"{{"imports":{{"button.ts":{{"zyzz":null}},"index.ts":{{"./button.js":"button.ts"}},"page.ts":{{"./index.js":"index.ts","zyzz":null}}}},"modules":{{"button.ts":{button},"index.ts":{index},"page.ts":{page}}}}}"#
+        )
+    }
+
+    #[test]
+    fn reexported_edits() {
+        let mut compiler = Compiler::default();
+        let parse =
+            |text: String| -> serde_json::Value { serde_json::from_str(&text).unwrap_or_default() };
+        let before = parse(compiler.compile(&reexported("8px")));
+        let edited = parse(compiler.compile(&reexported("12px")));
+        let fresh = parse(Compiler::default().compile(&reexported("12px")));
+
+        // The index extracts as before the edit, while the page reads the edited constant through
+        // it. Each module matches a fresh compile.
+        for id in ["button.ts", "index.ts", "page.ts"] {
+            let output = match &edited["modules"][id] {
+                serde_json::Value::Number(_) => &before["modules"][id],
+                output => output,
+            };
+
+            assert_eq!(output, &fresh["modules"][id], "{id}");
+        }
+
+        insta::assert_snapshot!(edited["modules"]["index.ts"].to_string(), @"0");
+        insta::assert_snapshot!(
+            edited["modules"]["page.ts"]["css"].to_string().contains("12px").to_string(),
+            @"true"
+        );
+    }
+
+    fn composed(declarations: &str) -> String {
+        let base = json(&format!(
+            "import {{style}} from 'zyzz';export const base=style({{{declarations}}});"
+        ));
+        let card = json(
+            "import {base} from './base.js';import {cx,style} from 'zyzz';const extra=style({margin:2});export const card=(enabled)=>cx(enabled&&base(),extra());",
+        );
+        let mut imports = String::from(
+            r#""base.ts":{"zyzz":null},"card.ts":{"./base.js":"base.ts","zyzz":null}"#,
+        );
+        let mut modules = format!(r#""base.ts":{base},"card.ts":{card}"#);
+
+        // More modules than the transform cache holds, so the card's transform is evicted.
+        for index in 0..300 {
+            let filler = json(&format!(
+                "import {{style}} from 'zyzz';export const filler=style({{zIndex:{index}}});"
+            ));
+
+            let _ = write!(imports, r#","filler{index}.ts":{{"zyzz":null}}"#);
+            let _ = write!(modules, r#","filler{index}.ts":{filler}"#);
+        }
+
+        format!(r#"{{"imports":{{{imports}}},"modules":{{{modules}}}}}"#)
+    }
+
+    #[test]
+    fn composed_evicted_edits() {
+        let mut compiler = Compiler::default();
+        let parse =
+            |text: String| -> serde_json::Value { serde_json::from_str(&text).unwrap_or_default() };
+        let before = parse(compiler.compile(&composed("color:'red'")));
+        let edited = parse(compiler.compile(&composed("color:'red',padding:4")));
+        let fresh = parse(Compiler::default().compile(&composed("color:'red',padding:4")));
+
+        insta::assert_snapshot!(edited["error"], @"null");
+
+        // The card's evicted transform recompiles with the classes its input now publishes.
+        let output = match &edited["modules"]["card.ts"] {
+            serde_json::Value::Number(_) => &before["modules"]["card.ts"],
+            output => output,
+        };
+
+        insta::assert_snapshot!((output == &fresh["modules"]["card.ts"]).to_string(), @"true");
+    }
+
+    fn themed(note: &str) -> String {
+        let theme = json(&format!(
+            "import {{Vars}} from 'zyzz';export const theme=Vars.define({{color:{{brand:'#06c'}}}});export const note='{note}';"
+        ));
+        let config = json(
+            "import {Config} from 'zyzz';import {theme} from './theme.js';export const {style,vars}=Config.create({id:'app',vars:{base:theme},defaultVars:'base'});",
+        );
+        let card = json(
+            "import {style,vars} from './config.js';export const card=style({color:'brand'});export const scope=vars();",
+        );
+
+        format!(
+            r#"{{"imports":{{"card.ts":{{"./config.js":"config.ts"}},"config.ts":{{"./theme.js":"theme.ts","zyzz":null}},"theme.ts":{{"zyzz":null}}}},"modules":{{"card.ts":{card},"config.ts":{config},"theme.ts":{theme}}}}}"#
+        )
+    }
+
+    #[test]
+    fn themed_edits() {
+        let mut compiler = Compiler::default();
+        let parse =
+            |text: String| -> serde_json::Value { serde_json::from_str(&text).unwrap_or_default() };
+        let before = parse(compiler.compile(&themed("one")));
+        let edited = parse(compiler.compile(&themed("two")));
+        let fresh = parse(Compiler::default().compile(&themed("two")));
+
+        insta::assert_snapshot!(edited["error"], @"null");
+
+        // The theme module re-extracts with a new definition, which the configuration reads.
+        for id in ["card.ts", "config.ts", "theme.ts"] {
+            let output = match &edited["modules"][id] {
+                serde_json::Value::Number(_) => &before["modules"][id],
+                output => output,
+            };
+
+            assert_eq!(output, &fresh["modules"][id], "{id}");
+        }
+
+        assert_eq!(edited["shared"], fresh["shared"]);
+        assert_eq!(edited["contracts"], fresh["contracts"]);
     }
 
     #[test]
