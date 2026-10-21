@@ -321,7 +321,7 @@ describe('zyzz', () => {
       await Fs.mkdir(Path.join(root, 'src'))
       await Fs.writeFile(
         Path.join(root, 'src/index.ts'),
-        "import {Config} from 'zyzz';const {style}=Config.create({vars:{color:{ink:{light:'#123456',dark:'#abcdef'}}}});export const card=style({color:'ink',targets:{ios:{opacity:0.5},android:{opacity:0.8}}});",
+        "import {Config} from 'zyzz';const {style}=Config.create({vars:{color:{ink:{light:'#123456',dark:'#abcdef'}}}});export const card=style({color:'ink',fontFamily:'Inter, sans-serif',paddingTop:'1rem',targets:{ios:{opacity:0.5},android:{opacity:0.8}}});",
       )
       const bin = Path.join(root, 'node_modules/.bin/zyzz')
       const run = (args: string[]) =>
@@ -333,6 +333,10 @@ describe('zyzz', () => {
         'dark',
         '--platform',
         'android',
+        '--font',
+        'Inter, sans-serif=Inter',
+        '--rem',
+        '16',
       ])
       const files = await Fs.readdir(Path.join(root, 'dist'))
       expect(
@@ -361,7 +365,9 @@ describe('zyzz', () => {
         {
           "style": {
             "color": "#abcdef",
+            "fontFamily": "Inter",
             "opacity": 0.8,
+            "paddingTop": 16,
           },
         }
       `)
@@ -372,6 +378,10 @@ describe('zyzz', () => {
         ['--target', 'native', '--color-scheme', 'dark', '--script', 'init.js'],
         ['--platform', 'ios'],
         ['--color-scheme', 'light'],
+        ['--font', 'Inter, sans-serif=Inter'],
+        ['--rem', '16'],
+        ['--target', 'native', '--color-scheme', 'dark', '--font', 'Inter'],
+        ['--target', 'native', '--color-scheme', 'dark', '--font', '=Inter'],
       ])
         await expect(
           run(args).then(

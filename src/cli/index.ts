@@ -21,6 +21,22 @@ const options = z.object({
     .enum(['light', 'dark'])
     .optional()
     .describe('Native color scheme'),
+  font: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Native font family as <authored>=<registered>, such as "Inter, sans-serif=Inter" (repeatable)',
+    ),
+  px: z
+    .number()
+    .positive()
+    .optional()
+    .describe('Native logical units per px (default: 1)'),
+  rem: z
+    .number()
+    .positive()
+    .optional()
+    .describe('Native logical units per rem'),
   'css-only': z
     .boolean()
     .default(false)
@@ -135,6 +151,32 @@ await Cli.create('zyzz', {
   })
   .serve()
 
+/** Parses repeated `<authored>=<registered>` pairs. Authored families may contain commas and spaces, never `=`. */
+function fonts(
+  entries: readonly string[] | undefined,
+): Readonly<Record<string, string>> | undefined {
+  if (!entries) return undefined
+
+  const mapping: Record<string, string> = {}
+
+  for (const entry of entries) {
+    const index = entry.lastIndexOf('=')
+    const authored = entry.slice(0, index).trim()
+    const registered = entry.slice(index + 1).trim()
+
+    if (index === -1 || !authored || !registered)
+      throw new Error(
+        `--font expects <authored>=<registered>, such as "Inter, sans-serif=Inter". Received "${entry}".`,
+      )
+    if (authored in mapping)
+      throw new Error(`--font maps "${authored}" more than once.`)
+
+    mapping[authored] = registered
+  }
+
+  return mapping
+}
+
 async function identity(): Promise<string> {
   try {
     const value: unknown = JSON.parse(await Fs.readFile('package.json', 'utf8'))
@@ -168,15 +210,28 @@ async function open(context: open.Context) {
       throw new Error('Native builds require --color-scheme light or dark.')
     if (context.options.script !== undefined)
       throw new Error('Native builds do not emit an initialization script.')
-  } else if (context.options.platform || context.options['color-scheme'])
-    throw new Error('--platform and --color-scheme require --target native.')
+  } else if (
+    context.options.platform ||
+    context.options['color-scheme'] ||
+    context.options.font ||
+    context.options.px !== undefined ||
+    context.options.rem !== undefined
+  )
+    throw new Error(
+      '--platform, --color-scheme, --font, --px, and --rem require --target native.',
+    )
 
   return Host.create({
     ...(context.options.target === 'native'
       ? {
           native: {
             colorScheme: context.options['color-scheme']!,
+            fonts: fonts(context.options.font),
             platform: context.options.platform,
+            units: {
+              px: context.options.px,
+              rem: context.options.rem,
+            },
           },
         }
       : {}),

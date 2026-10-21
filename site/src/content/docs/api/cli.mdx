@@ -92,6 +92,17 @@ npx zyzz build --external '~icons/*' --external framework-config
 
 Any other unresolved bare import fails the build.
 
+### --font
+
+- **Type:** `readonly string[]{:ts}`
+
+Maps an exact authored `fontFamily` to a registered native family, written as `<authored>=<registered>`. Native builds reject an unmapped family, so map each one that styles author. Repeat the flag for several families. It matches the Metro [`fonts`](/docs/api/metro#optionsfonts) option, does not load fonts, and is rejected for web builds.
+
+```sh /--font/
+# Renders authored `fontFamily: 'Inter, sans-serif'` with Inter
+npx zyzz build --target native --color-scheme light --font 'Inter, sans-serif=Inter'
+```
+
 ### --minify
 
 - **Type:** `boolean{:ts}`
@@ -137,6 +148,29 @@ The native platform for platform branches, required when styles author them. It 
 ```sh /--platform ios/
 # Compiles iOS branches
 npx zyzz build --target native --color-scheme light --platform ios
+```
+
+### --px
+
+- **Type:** `number{:ts}`
+- **Default:** `1{:ts}`
+
+Native logical units per `px`, matching the Metro [`units`](/docs/api/metro#optionsunits) option. It is rejected for web builds.
+
+```sh /--px 1/
+# Keeps one px per logical unit
+npx zyzz build --target native --color-scheme light --px 1
+```
+
+### --rem
+
+- **Type:** `number{:ts}`
+
+Native logical units per `rem`. It has no default, so native builds reject `rem` lengths without it. It is rejected for web builds.
+
+```sh /--rem 16/
+# Converts 1rem to 16 logical units
+npx zyzz build --target native --color-scheme light --rem 16
 ```
 
 ### --script
