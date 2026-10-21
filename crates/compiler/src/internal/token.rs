@@ -447,7 +447,7 @@ fn check(reference: &Reference, value: &Value, property: &str) -> bool {
 }
 
 /// Reads a token tree leaf by dotted path.
-fn leaf<'a>(tokens: &'a Data, path: &str) -> Option<&'a Data> {
+pub fn leaf<'a>(tokens: &'a Data, path: &str) -> Option<&'a Data> {
     let mut node = tokens;
 
     for key in path.split('.') {
