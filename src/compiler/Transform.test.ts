@@ -64,6 +64,7 @@ import * as TextFlow from '../../test/fixtures/TextFlow.js'
 import * as TextTimeline from '../../test/fixtures/TextTimeline.js'
 import * as Tuples from '../../test/fixtures/Tuples.js'
 import * as WeasyPrint from '../../test/fixtures/WeasyPrint.js'
+import * as Wrappers from '../../test/fixtures/Wrappers.js'
 import * as Literal from '../internal/Literal.js'
 import * as Trace from '@jridgewell/trace-mapping'
 import * as CssTree from 'css-tree'
@@ -3657,6 +3658,366 @@ export const bar=style((values:{width:\`\${number}px\`})=>({width:values.width})
           `true`,
         )
       }
+    })
+  })
+})
+
+describe('wrappers', () => {
+  describe('compile', () => {
+    const source = `import { style } from 'zyzz'
+type P = { className?: string | undefined; children?: unknown }
+const L0 = (props: P) => <button {...styles.l0({ className: props.className })}>{props.children}</button>
+const L1 = (props: P) => <L0 {...styles.l1({ className: props.className })}>{props.children}</L0>
+function L2({ className, children }: P) {
+  return <L1 {...styles.l2({ className })}>
+    {children}
+  </L1>
+}
+const Fixed = ({ children }: P) => <span {...styles.l0()}>{children}</span>
+const Drops = (props: P) => <Fixed {...styles.l2({ className: props.className })}>{props.children}</Fixed>
+const Labeled = (props: P & { label?: string }) => <button aria-label={props.label} {...styles.l0({ className: props.className })}>{props.children}</button>
+const Counted = (props: P) => { const label = 'counted'; return <button {...styles.l0({ className: props.className })}>{props.children}{label}</button> }
+const Conditional = (props: P) => props.children ? <button {...styles.l0({ className: props.className })}>{props.children}</button> : null
+let Replaced = (props: P) => <button {...styles.l0({ className: props.className })}>{props.children}</button>
+const extra = 'extra'
+export const App = () => <main>
+<L2>folded</L2>
+<L2 className={extra} key="key">merged</L2>
+<L2 className="literal">literal</L2>
+<Drops>dropped</Drops>
+<Fixed className="ignored">fixed</Fixed>
+<L2 id="id">attribute</L2>
+<L2 ref={null}>ref</L2>
+<L2 {...{}}>spread</L2>
+<Labeled>labeled</Labeled>
+<Counted>statements</Counted>
+<Conditional>condition</Conditional>
+<Replaced>let</Replaced>
+</main>
+namespace styles {
+export const l0 = style({ color: 'rgb(0, 0, 255)', borderLeft: '1px solid', paddingLeft: '1px' })
+export const l1 = style({ borderLeft: '2px solid', paddingLeft: '2px' })
+export const l2 = style({ borderLeft: '3px solid', paddingLeft: '3px' })
+}`
+
+    test('folds wrapper chains into host elements with the runtime class order', async () => {
+      const output = Transform.compile({ moduleId: 'App.tsx', source })
+
+      expect(output.code).toMatchInlineSnapshot(`
+        "
+        import { Props as __zyzzProps } from 'zyzz/runtime';
+
+        type P = { className?: string | undefined; children?: unknown }
+        const L0 = (props: P) => <button className={__zyzzProps.merge("z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",props.className)}>{props.children}</button>
+        const L1 = (props: P) => <button className={__zyzzProps.merge("z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4",props.className)}>{props.children}</button>
+        function L2({ className, children }: P) {
+          return <button className={styles.l2?__zyzzProps.merge("z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6",className):styles.l2({className:className}).className}>
+            {children}
+          </button>
+        }
+        const Fixed = ({ children }: P) => <span className={"z_l0kPgl0 z_l0kPgl1 z_l0kPgl2"}>{children}</span>
+        const Drops = (props: P) => <Fixed className={__zyzzProps.merge("z_l0kPgl5 z_l0kPgl6",props.className)}>{props.children}</Fixed>
+        const Labeled = (props: P & { label?: string }) => <button aria-label={props.label} className={__zyzzProps.merge("z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",props.className)}>{props.children}</button>
+        const Counted = (props: P) => { const label = 'counted'; return <button className={__zyzzProps.merge("z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",props.className)}>{props.children}{label}</button> }
+        const Conditional = (props: P) => props.children ? <button className={__zyzzProps.merge("z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",props.className)}>{props.children}</button> : null
+        let Replaced = (props: P) => <button className={__zyzzProps.merge("z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",props.className)}>{props.children}</button>
+        const extra = 'extra'
+        export const App = () => <main>
+        <button className={(styles.l2||styles.l2())&&"z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6"}>folded</button>
+        <button className={(styles.l2||styles.l2())&&__zyzzProps.merge("z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6",extra)} key="key">merged</button>
+        <button className={(styles.l2||styles.l2())&&"z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6 literal"}>literal</button>
+        <span className={"z_l0kPgl0 z_l0kPgl1 z_l0kPgl2"}>dropped</span>
+        <Fixed className="ignored">fixed</Fixed>
+        <L2 id="id">attribute</L2>
+        <L2 ref={null}>ref</L2>
+        <L2 {...{}}>spread</L2>
+        <Labeled>labeled</Labeled>
+        <Counted>statements</Counted>
+        <Conditional>condition</Conditional>
+        <Replaced>let</Replaced>
+        </main>
+        namespace styles {
+        export declare const l0: import('zyzz').style.ReturnType
+        export declare const l1: import('zyzz').style.ReturnType
+        export const l2 = (1 as unknown as import('zyzz').style.ReturnType)
+        }"
+      `)
+
+      const rendered = await Wrappers.render({
+        css: output.css,
+        entry: 'App.tsx',
+        modules: { 'App.tsx': output.code },
+      })
+
+      expect(rendered.markup).toMatchInlineSnapshot(
+        `"<main><button class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6">folded</button><button class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6 extra">merged</button><button class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6 literal">literal</button><span class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2">dropped</span><span class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2">fixed</span><button class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6">attribute</button><button class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6">ref</button><button class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6">spread</button><button class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2">labeled</button><button class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2">statementscounted</button><button class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2">condition</button><button class="z_l0kPgl0 z_l0kPgl1 z_l0kPgl2">let</button></main>"`,
+      )
+      expect(rendered.elements).toMatchInlineSnapshot(`
+        [
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6 extra",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6 literal",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "span",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "span",
+          },
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 z_l0kPgl3 z_l0kPgl4 z_l0kPgl5 z_l0kPgl6",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "button",
+          },
+        ]
+      `)
+    })
+
+    test('folds grouped output with the same cascade', async () => {
+      const output = Transform.compile({
+        cssOutput: 'grouped',
+        moduleId: 'App.tsx',
+        source,
+      })
+      const rendered = await Wrappers.render({
+        css: output.css,
+        entry: 'App.tsx',
+        modules: { 'App.tsx': output.code },
+      })
+
+      expect(rendered.elements).toMatchInlineSnapshot(`
+        [
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 extra",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2 literal",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "span",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "span",
+          },
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "3px",
+            "className": "z_l0kPgl0 z_l0kPgl1 z_l0kPgl2",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "3px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "button",
+          },
+          {
+            "borderLeftWidth": "1px",
+            "className": "z_l0kPgl0",
+            "color": "rgb(0, 0, 255)",
+            "paddingLeft": "1px",
+            "tag": "button",
+          },
+        ]
+      `)
+    })
+
+    test('keeps reading wrappers declared after the function that renders them', () => {
+      const output = Transform.compile({
+        moduleId: 'Early.tsx',
+        source: `import { style } from 'zyzz'
+type P = { className?: string | undefined; children?: unknown }
+export function render() { return <Late>early</Late> }
+// A key evaluated before the class list would run before the wrapper read.
+export function keyed(key: () => string) { return <Late key={key()} className="x">keyed</Late> }
+const Early = (props: P) => <Late {...styles.early({ className: props.className })}>{props.children}</Late>
+export const first = () => <Early>first</Early>
+const Late = (props: P) => <button {...styles.late({ className: props.className })}>{props.children}</button>
+export const after = () => <Late>after</Late>
+namespace styles {
+export const early = style({ padding: '1px' })
+export const late = style({ color: 'red' })
+}`,
+      })
+
+      // The early element still throws before \`Late\` initializes, as the component would.
+      expect(output.code).toMatchInlineSnapshot(`
+        "
+        import { Props as __zyzzProps } from 'zyzz/runtime';
+
+        type P = { className?: string | undefined; children?: unknown }
+        export function render() { return <button className={Late&&"z_mespvT1"}>early</button> }
+        // A key evaluated before the class list would run before the wrapper read.
+        export function keyed(key: () => string) { return <Late key={key()} className="x">keyed</Late> }
+        const Early = (props: P) => <button className={__zyzzProps.merge((Late&&"z_mespvT1 z_mespvT0"),props.className)}>{props.children}</button>
+        export const first = () => <button className={Late&&"z_mespvT1 z_mespvT0"}>first</button>
+        const Late = (props: P) => <button className={__zyzzProps.merge("z_mespvT1",props.className)}>{props.children}</button>
+        export const after = () => <button className={"z_mespvT1"}>after</button>
+        "
+      `)
+    })
+
+    test('keeps style guards of wrappers that can render before initialization', () => {
+      const output = Transform.compile({
+        moduleId: 'Eager.tsx',
+        source: `import { style } from 'zyzz'
+type P = { className?: string | undefined; children?: unknown }
+const Button = (props: P) => <button {...styles.button({ className: props.className })}>{props.children}</button>
+export const App = () => <Button>app</Button>
+// A synchronous render before the namespace initializes still reaches the style guard.
+App()
+namespace styles {
+export const button = style({ color: 'red' })
+}`,
+      })
+
+      expect(output.code).toMatchInlineSnapshot(`
+        "
+        import { Props as __zyzzProps } from 'zyzz/runtime';
+
+        type P = { className?: string | undefined; children?: unknown }
+        const Button = (props: P) => <button className={styles.button?__zyzzProps.merge("z_Emit600",props.className):styles.button({className:props.className}).className}>{props.children}</button>
+        export const App = () => <button className={(styles.button||styles.button())&&"z_Emit600"}>app</button>
+        // A synchronous render before the namespace initializes still reaches the style guard.
+        App()
+        namespace styles {
+        export const button = (1 as unknown as import('zyzz').style.ReturnType)
+        }"
+      `)
+    })
+
+    test('keeps development components unfolded', () => {
+      const output = Transform.compile({
+        development: true,
+        moduleId: 'App.tsx',
+        source,
+      })
+
+      expect(output.code.includes('<L2>folded</L2>')).toMatchInlineSnapshot(
+        `true`,
+      )
     })
   })
 })
