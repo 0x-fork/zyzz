@@ -25,6 +25,7 @@ use crate::compiler::internal::contributions::Factory;
 use crate::compiler::internal::dynamic;
 use crate::compiler::internal::expression::unwrap;
 use crate::compiler::internal::packed_styles;
+use crate::compiler::internal::recipes;
 use crate::compiler::internal::scope;
 use crate::compiler::internal::statics::key_literal;
 use crate::compiler::internal::syntax::Parsed;
@@ -412,6 +413,89 @@ fn write_selector(
     output.push_str("return result})");
 }
 
+/// Writes a selector equivalent to `Recipe.create` for one unconditional class-selection recipe
+/// without payloads. Each axis appends its precomputed choice class, so a call builds one class
+/// string and writes no attributes.
+fn write_class_selector(
+    output: &mut String,
+    recipe: &runtime::Definition,
+    prefix: &str,
+    class_name: &str,
+    typed: bool,
+) {
+    let parameter = if typed {
+        ":Record<string,unknown>&import('zyzz').style.Options"
+    } else {
+        ""
+    };
+
+    // An empty or absent class list starts empty, so each choice class keeps a leading space
+    // that the join below removes.
+    let listed = class_name.len() > 2 && class_name.starts_with('"');
+    let initial = if listed { class_name } else { "\"\"" };
+
+    let _ = write!(
+        output,
+        "((input{parameter}={{}})=>{{const external=input.className,style=input.style,vars=input.vars,inline=vars?{{...vars,...style}}:style;let value,className={initial};"
+    );
+
+    let positions = recipes::Positions::new(&recipe.axes);
+
+    for (axis, choices) in recipe.axes.iter() {
+        let mut key = String::new();
+
+        js::write_string(&mut key, axis);
+        let _ = write!(
+            output,
+            "value=Object.hasOwn(input,{key})?input[{key}]:void 0;"
+        );
+
+        if let Some(Some(fallback)) = recipe.defaults.get(axis) {
+            output.push_str("if(value===void 0)value=");
+            js::write_string(output, fallback);
+            output.push(';');
+        }
+
+        // `String` matches the attribute value an attribute recipe would write.
+        output.push_str("if(value!==null&&value!==void 0){value=String(value);className+=");
+
+        let silent = recipe
+            .silent
+            .as_ref()
+            .and_then(|silent| silent.get(axis))
+            .map_or(&[][..], Vec::as_slice);
+
+        for name in choices {
+            if silent.contains(name) {
+                continue;
+            }
+
+            let Some(class) = positions.class(prefix, axis, name, None) else {
+                continue;
+            };
+
+            output.push_str("value===");
+            js::write_string(output, name);
+            output.push('?');
+            js::write_string(output, &format!(" {class}"));
+            output.push(':');
+        }
+
+        output.push_str("\"\"}");
+    }
+
+    if listed {
+        output.push_str("if(external)className+=\" \"+external;");
+    } else {
+        let _ = write!(
+            output,
+            "className=className?className.slice(1):{class_name};if(external)className=className?className+\" \"+external:external;"
+        );
+    }
+
+    output.push_str("return inline?{className,style:inline}:{className}})");
+}
+
 /// `JSON.stringify({ ...recipe, html })`, in the key order `Recipes.expand` builds.
 fn write_recipe(output: &mut String, recipe: &runtime::Definition, html: bool) {
     output.push_str("{\"axes\":");
@@ -526,9 +610,14 @@ fn recipe_type(call: &Call<'_>, recipe: &runtime::Definition, html: bool) -> Str
         _ => String::new(),
     };
     let output = if html { ",\"html\"" } else { "" };
+    let selection = if recipe.prefix.is_some() {
+        "selection:'class';"
+    } else {
+        ""
+    };
 
     format!(
-        "import('zyzz').variants.ReturnType<{{variants:{{{}}}{conditions}}}{output}>",
+        "import('zyzz').variants.ReturnType<{{{selection}variants:{{{}}}{conditions}}}{output}>",
         axes.join(";")
     )
 }
@@ -775,6 +864,148 @@ fn fold_bound(
     };
 
     module.overwrite(previous, application.end, suffix)
+}
+
+/// Whether a selection equals a choice name. Boolean choices also match booleans, as the
+/// attribute a recipe writes for `true` reads `"true"`.
+fn write_choice_test(output: &mut String, value: &str, name: &str) {
+    if name == "true" || name == "false" {
+        let _ = write!(output, "{value}==={name}||");
+    }
+
+    let _ = write!(output, "{value}===");
+    js::write_string(output, name);
+}
+
+/// Authored axes and value spans of a class-selection recipe application.
+type ClassFields<'a> = SmallVec<[(&'a str, Span); 4]>;
+
+/// The axes a class-selection recipe application selects, with each value's span, in authored
+/// order, or `None` when its values object is not a plain literal of distinct axes. Choice names a
+/// non-string selection could stringify to also keep the call.
+fn recipe_classes<'a>(
+    application: &Bound<'a>,
+    recipe: &runtime::Definition,
+) -> Option<ClassFields<'a>> {
+    recipe.prefix.as_ref()?;
+
+    let mut fields: ClassFields<'a> = SmallVec::new();
+
+    for property in &application.values.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+            return None;
+        };
+
+        if property.computed || property.method || property.kind != PropertyKind::Init {
+            return None;
+        }
+
+        let key = match &property.key {
+            PropertyKey::StaticIdentifier(identifier) => identifier.name.as_str(),
+            PropertyKey::StringLiteral(literal) => literal.value.as_str(),
+            _ => return None,
+        };
+
+        if !recipe.axes.contains_key(key) || fields.iter().any(|(seen, _)| *seen == key) {
+            return None;
+        }
+
+        fields.push((key, property.value.span()));
+    }
+
+    // A number or other value would stringify to a numeric choice name.
+    let numeric = recipe
+        .axes
+        .values()
+        .flatten()
+        .any(|name| name.parse::<f64>().is_ok() || name.trim() != &**name);
+
+    (!numeric).then_some(fields)
+}
+
+/// Folds a class-selection recipe application spread alone onto a DOM element into one
+/// `className` expression. Each authored value stays in place, in authored order, so rewrites
+/// inside it still apply, and is read once into `value`. Omitted axes contribute their default
+/// class to the constant prefix. Only applications after initialization fold.
+fn fold_classes(
+    module: &mut Edits<'_>,
+    application: &Bound<'_>,
+    fields: &[(&str, Span)],
+    recipe: &runtime::Definition,
+    class_name: &str,
+    value: &str,
+) -> Result<()> {
+    let Some(prefix) = &recipe.prefix else {
+        return Ok(());
+    };
+    let silent = |axis: &str, choice: &str| {
+        recipe
+            .silent
+            .as_ref()
+            .and_then(|silent| silent.get(axis))
+            .is_some_and(|names| names.iter().any(|name| **name == *choice))
+    };
+    let positions = recipes::Positions::new(&recipe.axes);
+    let class = |axis: &str, choice: &str| {
+        (!silent(axis, choice))
+            .then(|| positions.class(prefix, axis, choice, None))
+            .flatten()
+    };
+    let mut constant = String::from(class_name);
+
+    for (axis, _) in recipe.axes.iter() {
+        if fields.iter().any(|(key, _)| *key == &**axis) {
+            continue;
+        }
+
+        if let Some(Some(fallback)) = recipe.defaults.get(axis)
+            && let Some(name) = class(axis, fallback)
+        {
+            constant.push(' ');
+            constant.push_str(&name);
+        }
+    }
+
+    let mut text = String::from("className={");
+
+    js::write_string(&mut text, constant.trim_start());
+
+    let mut previous = application.spread.start;
+
+    for (axis, span) in fields {
+        let _ = write!(text, "+(({value}=(");
+        module.overwrite(previous, span.start, std::mem::take(&mut text))?;
+        previous = span.end;
+        text.push_str("))===void 0?");
+
+        let fallback = recipe
+            .defaults
+            .get(axis)
+            .and_then(Option::as_deref)
+            .and_then(|fallback| class(axis, fallback));
+
+        js::write_string(
+            &mut text,
+            &fallback.map_or_else(String::new, |name| format!(" {name}")),
+        );
+        text.push(':');
+
+        for choice in recipe.axes.get(axis).into_iter().flatten() {
+            let Some(name) = class(axis, choice) else {
+                continue;
+            };
+
+            write_choice_test(&mut text, value, choice);
+            text.push('?');
+            js::write_string(&mut text, &format!(" {name}"));
+            text.push(':');
+        }
+
+        text.push_str("\"\")");
+    }
+
+    text.push('}');
+    module.overwrite(previous, application.spread.end, text)
 }
 
 /// Locates emitted declarations, skipping selectors, conditions, and quoted CSS data. Offsets are
@@ -1191,6 +1422,7 @@ pub fn compile<'a>(
         .unwrap_or_default();
     let mut plans: Vec<(&Call<'_>, Vec<(&Bound<'_>, BoundFields)>)> = Vec::new();
     let mut selections: Vec<(&Call<'_>, Vec<(&Bound<'_>, String)>)> = Vec::new();
+    let mut class_selections: Vec<(&Call<'_>, Vec<(&Bound<'_>, ClassFields<'_>)>)> = Vec::new();
     // Dynamic and recipe definitions whose every read folds to props after initialization, so no
     // read needs their callable.
     let mut inlined: FxHashSet<Arc<str>> = FxHashSet::default();
@@ -1261,6 +1493,29 @@ pub fn compile<'a>(
                     .as_ref()
                     .is_some_and(|payloads| !payloads.is_empty())
             {
+                continue;
+            }
+
+            // A guard's bare call would skip evaluating the authored values before it throws, so
+            // only applications after initialization fold, as for attribute selection.
+            if recipe.prefix.is_some() {
+                let folds: Vec<(&Bound<'_>, ClassFields<'_>)> = applied
+                    .iter()
+                    .filter(|application| {
+                        application.initialized
+                            && !composing_span(application.start, application.end)
+                            && !html_starts.contains(&application.start)
+                    })
+                    .filter_map(|application| {
+                        recipe_classes(application, recipe).map(|fields| (application, fields))
+                    })
+                    .collect();
+
+                if folds.len() == applied.len() && !bound.partial.contains(&call.name) {
+                    inlined.insert(Arc::clone(&call.name));
+                }
+
+                class_selections.push((call, folds));
                 continue;
             }
 
@@ -1530,6 +1785,30 @@ pub fn compile<'a>(
         for (application, fields) in folds {
             fold_bound(&mut module, source, application, fields, &class_name)?;
         }
+    }
+
+    let value = unique(&walker.identifiers, "__zyzzValue");
+    let mut folded = false;
+
+    for (call, folds) in &class_selections {
+        let class_name = generator.classes.get(&call.name).map_or("", String::as_str);
+        let Some(recipe) = &call.recipe else {
+            continue;
+        };
+
+        for (application, fields) in folds {
+            fold_classes(&mut module, application, fields, recipe, class_name, &value)?;
+            folded = true;
+        }
+    }
+
+    // Folded selections assign one module-scope value, read before the next assignment.
+    if folded {
+        state.compositions.push(if typed {
+            format!("let {value}:unknown;")
+        } else {
+            format!("let {value};")
+        });
     }
 
     for (call, folds) in &selections {
@@ -2192,6 +2471,14 @@ impl<'a> Generator<'_, 'a> {
                         .collect::<Vec<_>>(),
                 ),
                 (
+                    "prefixes",
+                    input
+                        .owners
+                        .iter()
+                        .flat_map(|owner| owner.prefixes.iter())
+                        .collect::<Vec<_>>(),
+                ),
+                (
                     "slots",
                     input
                         .owners
@@ -2531,7 +2818,9 @@ impl<'a> Generator<'_, 'a> {
                 let specialized = !conditional && !payload && !html && !self.shadowed;
                 let mut selection = String::new();
 
-                if specialized {
+                if specialized && let Some(prefix) = &recipe.prefix {
+                    write_class_selector(&mut selection, recipe, prefix, &class_name, typed);
+                } else if specialized {
                     write_selector(&mut selection, recipe, &class_name, typed);
                 } else {
                     if !conditional {
@@ -2543,6 +2832,20 @@ impl<'a> Generator<'_, 'a> {
                     write_axes(&mut selection, recipe);
                     selection.push_str(",\"defaults\":");
                     write_defaults(&mut selection, recipe);
+
+                    if let Some(prefix) = &recipe.prefix {
+                        selection.push_str(",\"prefix\":");
+                        js::write_string(&mut selection, prefix);
+                    }
+
+                    if let Some(silent) = &recipe.silent {
+                        selection.push_str(",\"silent\":");
+                        js::write_object(
+                            &mut selection,
+                            silent.iter().map(|(axis, choices)| (&**axis, choices)),
+                            |output, choices| write_strings(output, choices),
+                        );
+                    }
 
                     if let Some(conditions) = &recipe.conditions {
                         selection.push_str(",\"conditions\":");

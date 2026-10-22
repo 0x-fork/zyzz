@@ -58,6 +58,8 @@ pub struct Bound<'a> {
     pub end: u32,
     /// Whether every evaluation follows the definition's initialization.
     pub initialized: bool,
+    /// The JSX spread attribute whose argument is the call.
+    pub spread: Span,
     /// Start of the call.
     pub start: u32,
     /// The authored values.
@@ -156,7 +158,7 @@ struct Candidate<'c, 'a> {
 #[derive(Clone, Copy)]
 struct Read<'a> {
     /// The values object of a one-argument call spread alone onto a DOM element.
-    bound: Option<&'a ObjectExpression<'a>>,
+    bound: Option<(&'a ObjectExpression<'a>, Span)>,
     /// Parent of the identifier.
     parent: Option<AstKind<'a>>,
     /// Parent of the identifier's member expression, when the parent is one.
@@ -1256,12 +1258,12 @@ impl<'c, 'a> Applications<'c, 'a> {
                             && (candidate.namespace.is_none()
                                 || self.namespace_counts.get(name) == Some(&1))
                     })
-                    .and_then(|values| {
+                    .and_then(|(values, spread)| {
                         call_of(application, callee)
                             .filter(|call| call.arguments.len() == 1)
-                            .map(|call| (call.span, values))
+                            .map(|call| (call.span, values, spread))
                     });
-                let Some((span, values)) = span else {
+                let Some((span, values, spread)) = span else {
                     output.partial.insert(Arc::clone(&call.name));
                     continue;
                 };
@@ -1274,6 +1276,7 @@ impl<'c, 'a> Applications<'c, 'a> {
                         callee_end: callee.end,
                         end: span.end,
                         initialized: self.follows(candidate, reference),
+                        spread,
                         start: span.start,
                         values,
                     });
@@ -1429,8 +1432,9 @@ fn terminal(path: &[AstKind<'_>]) -> bool {
     }
 }
 
-/// The object literal of a one-argument application spread alone onto a DOM element.
-fn bound<'a>(path: &[AstKind<'a>]) -> Option<&'a ObjectExpression<'a>> {
+/// The object literal of a one-argument application spread alone onto a DOM element, with the
+/// spread attribute.
+fn bound<'a>(path: &[AstKind<'a>]) -> Option<(&'a ObjectExpression<'a>, Span)> {
     let mut index = path.len().checked_sub(1)?;
     let mut node = path.get(index)?.span();
 
@@ -1464,7 +1468,7 @@ fn bound<'a>(path: &[AstKind<'a>]) -> Option<&'a ObjectExpression<'a>> {
             spread_index.checked_sub(1).and_then(|at| path.get(at)),
             spread.span,
         ))
-    .then_some(&**values)
+    .then_some((&**values, spread.span))
 }
 
 /// Matches `^class(?:Name)?$`.
