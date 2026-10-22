@@ -2977,15 +2977,15 @@ export const View = () => <App />`,
 
     expect(output.modules['index.tsx']!.code).toMatchInlineSnapshot(`
       "
-      const __zyzzComposition405=["z_HXfo7a5 z_HXfo7a6 z-style-edltVp-base z-style-rJX5XM-loop"];
+      const __zyzzComposition405=["z_HXfo7a3 z-style-edltVp-base z-style-rJX5XM-loop"];
 
       import './base.ts'
       import * as ghosts from './ghost.ts'
       import './ghost.ts';
       import { loop } from './loop.ts'
       export const App = () => <main>
-        <i className={"z_HXfo7a0 z_HXfo7a1 z-style-edltVp-base z-style-K_6uJb-ghost"}>ladder</i>
-        {[true, false].map((on) => <i key={String(on)} className={(on)?"z_HXfo7a3 z_HXfo7a4 z-style-edltVp-base z-style-K_6uJb-primary":"z_HXfo7a2 z-style-edltVp-base"}>{String(on)}</i>)}
+        <i className={"z_HXfo7a0 z-style-edltVp-base z-style-K_6uJb-ghost"}>ladder</i>
+        {[true, false].map((on) => <i key={String(on)} className={(on)?"z_HXfo7a2 z-style-edltVp-base z-style-K_6uJb-primary":"z_HXfo7a1 z-style-edltVp-base"}>{String(on)}</i>)}
         <b className={"z_K_6uJb0 z-style-K_6uJb-ghost"}>imported</b>
         <b className={(loop?"z_rJX5XM0 z-style-rJX5XM-loop":loop().className)}>cycle</b>
         <b data-cycle="" className={__zyzzComposition405[((loop as unknown)||loop(),0)]}>cycle cx</b>
@@ -3015,21 +3015,21 @@ export const View = () => <App />`,
       [
         {
           "borderLeftWidth": "1px",
-          "className": "z_HXfo7a0 z_HXfo7a1 z-style-edltVp-base z-style-K_6uJb-ghost",
+          "className": "z_HXfo7a0 z-style-edltVp-base z-style-K_6uJb-ghost",
           "color": "rgb(255, 0, 0)",
           "paddingLeft": "2px",
           "tag": "i",
         },
         {
           "borderLeftWidth": "1px",
-          "className": "z_HXfo7a3 z_HXfo7a4 z-style-edltVp-base z-style-K_6uJb-primary",
+          "className": "z_HXfo7a2 z-style-edltVp-base z-style-K_6uJb-primary",
           "color": "rgb(0, 0, 255)",
           "paddingLeft": "1px",
           "tag": "i",
         },
         {
           "borderLeftWidth": "1px",
-          "className": "z_HXfo7a2 z-style-edltVp-base",
+          "className": "z_HXfo7a1 z-style-edltVp-base",
           "color": "rgb(255, 0, 0)",
           "paddingLeft": "1px",
           "tag": "i",
@@ -3050,7 +3050,7 @@ export const View = () => <App />`,
         },
         {
           "borderLeftWidth": "1px",
-          "className": "z_HXfo7a5 z_HXfo7a6 z-style-edltVp-base z-style-rJX5XM-loop",
+          "className": "z_HXfo7a3 z-style-edltVp-base z-style-rJX5XM-loop",
           "color": "rgb(255, 0, 0)",
           "paddingLeft": "4px",
           "tag": "b",
@@ -3078,6 +3078,137 @@ export const read = other`,
       import './base.ts' with { kind: 'style' };
       export const App = () => <main><i className={"z_edltVp0 z-style-edltVp-base"} /><b className={"z_edltVp1 z-style-edltVp-other"} /></main>
       export const read = other"
+    `)
+  })
+
+  test('renders one merged class per folded wrapper chain in grouped output', async () => {
+    const modules = {
+      'index.tsx': `import { style } from 'zyzz'
+type Props = { className?: string | undefined; children?: unknown }
+const Base = (props: Props) => <b {...styles.base({ className: props.className })}>{props.children}</b>
+const Ghost = (props: Props) => <Base {...styles.ghost({ className: props.className })}>{props.children}</Base>
+const Primary = (props: Props) => <Ghost {...styles.primary({ className: props.className })}>{props.children}</Ghost>
+const Partial = (props: Props) => <Base {...styles.partial({ className: props.className })}>{props.children}</Base>
+const Sibling = (props: Props) => <b {...styles.sibling({ className: props.className })}>{props.children}</b>
+const Enhanced = (props: Props) => <Sibling {...styles.ghost({ className: props.className })}>{props.children}</Sibling>
+export const App = () => <main><Primary>primary</Primary><Ghost className="external">ghost</Ghost><Partial>partial</Partial><Sibling>sibling</Sibling><Enhanced>enhanced</Enhanced></main>
+namespace styles {
+  export const base = style({ borderLeft: '1px solid', color: 'rgb(255, 0, 0)', paddingLeft: '1px', '@media (min-width: 1px)': { paddingLeft: '7px' } })
+  export const ghost = style({ borderLeft: '2px solid', paddingLeft: '2px' })
+  export const primary = style({ color: 'rgb(0, 0, 255)', paddingLeft: '3px' })
+  // A shorthand only partly overrides the query block, so this chain keeps its classes.
+  export const partial = style({ padding: '4px' })
+  // A sibling selector reaches elements outside the chain, so this chain keeps its classes too.
+  export const sibling = style({ paddingLeft: '5px', selectors: { '& + &': { paddingLeft: '9px' } } })
+}`,
+    }
+    const render = (cssOutput: 'atomic' | 'grouped') => {
+      const output = Graph.compile({ cssOutput, modules })
+
+      return Wrappers.render({
+        css: output.modules['index.tsx']!.css,
+        entry: 'index.tsx',
+        modules: { 'index.tsx': output.modules['index.tsx']!.code },
+      })
+    }
+    const grouped = Graph.compile({ cssOutput: 'grouped', modules })
+
+    expect(grouped.modules['index.tsx']!.css).toMatchInlineSnapshot(`
+      ".z_HXfo7a0{border-left:1px solid;color:rgb(255, 0, 0);padding-left:1px;@media (min-width: 1px){padding-left:7px;}}
+      .z_HXfo7a1{border-left:2px solid;padding-left:2px;}
+      .z_HXfo7a2{color:rgb(0, 0, 255);padding-left:3px;}
+      .z_HXfo7a3{padding:4px;}
+      .z_HXfo7a4{padding-left:5px;& + &{padding-left:9px;}}
+      .z_HXfo7a5{border-left:2px solid;color:rgb(0, 0, 255);padding-left:3px;}
+      .z_HXfo7a6{color:rgb(255, 0, 0);border-left:2px solid;padding-left:2px;}"
+    `)
+
+    const rendered = await render('grouped')
+
+    expect(rendered.markup).toMatchInlineSnapshot(
+      `"<main><b class="z_HXfo7a5">primary</b><b class="z_HXfo7a6 external">ghost</b><b class="z_HXfo7a0 z_HXfo7a3">partial</b><b class="z_HXfo7a4">sibling</b><b class="z_HXfo7a4 z_HXfo7a1">enhanced</b></main>"`,
+    )
+    expect(rendered.elements).toMatchInlineSnapshot(`
+      [
+        {
+          "borderLeftWidth": "2px",
+          "className": "z_HXfo7a5",
+          "color": "rgb(0, 0, 255)",
+          "paddingLeft": "3px",
+          "tag": "b",
+        },
+        {
+          "borderLeftWidth": "2px",
+          "className": "z_HXfo7a6 external",
+          "color": "rgb(255, 0, 0)",
+          "paddingLeft": "2px",
+          "tag": "b",
+        },
+        {
+          "borderLeftWidth": "1px",
+          "className": "z_HXfo7a0 z_HXfo7a3",
+          "color": "rgb(255, 0, 0)",
+          "paddingLeft": "4px",
+          "tag": "b",
+        },
+        {
+          "borderLeftWidth": "0px",
+          "className": "z_HXfo7a4",
+          "color": "rgb(0, 0, 0)",
+          "paddingLeft": "5px",
+          "tag": "b",
+        },
+        {
+          "borderLeftWidth": "2px",
+          "className": "z_HXfo7a4 z_HXfo7a1",
+          "color": "rgb(0, 0, 0)",
+          "paddingLeft": "9px",
+          "tag": "b",
+        },
+      ]
+    `)
+
+    const atomic = await render('atomic')
+
+    // Atomic output keeps every class and resolves to the same values.
+    expect(atomic.elements).toMatchInlineSnapshot(`
+      [
+        {
+          "borderLeftWidth": "2px",
+          "className": "z_HXfo7a0 z_HXfo7a1 z_HXfo7a2 z_HXfo7a3 z_HXfo7a4 z_HXfo7a5 z_HXfo7a6 z_HXfo7a7",
+          "color": "rgb(0, 0, 255)",
+          "paddingLeft": "3px",
+          "tag": "b",
+        },
+        {
+          "borderLeftWidth": "2px",
+          "className": "z_HXfo7a0 z_HXfo7a1 z_HXfo7a2 z_HXfo7a3 z_HXfo7a4 z_HXfo7a5 external",
+          "color": "rgb(255, 0, 0)",
+          "paddingLeft": "2px",
+          "tag": "b",
+        },
+        {
+          "borderLeftWidth": "1px",
+          "className": "z_HXfo7a0 z_HXfo7a1 z_HXfo7a2 z_HXfo7a3 z_HXfo7a8",
+          "color": "rgb(255, 0, 0)",
+          "paddingLeft": "4px",
+          "tag": "b",
+        },
+        {
+          "borderLeftWidth": "0px",
+          "className": "z_HXfo7a9 z_HXfo7aa",
+          "color": "rgb(0, 0, 0)",
+          "paddingLeft": "5px",
+          "tag": "b",
+        },
+        {
+          "borderLeftWidth": "2px",
+          "className": "z_HXfo7a9 z_HXfo7aa z_HXfo7a4 z_HXfo7a5",
+          "color": "rgb(0, 0, 0)",
+          "paddingLeft": "9px",
+          "tag": "b",
+        },
+      ]
     `)
   })
 })
