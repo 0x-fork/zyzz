@@ -2016,7 +2016,7 @@ export const initialized = renderToStaticMarkup(<button {...classes.button({ var
           ]
         `)
         expect(await page.evaluate(`App.initialized`)).toMatchInlineSnapshot(
-          `"<button class="z_kNYrjR7 z_kNYrjR8 z_kNYrjR9 z_kNYrjRa z_kNYrjRb z_kNYrjRc z_kNYrjRd zvdmeg0QWe6 zvdmeg0QWe4 zvdmeg0QWe0">Initialized</button>"`,
+          `"<button class="z_kNYrjR7 z_kNYrjR8 z_kNYrjR9 z_kNYrjRa z_kNYrjRb z_kNYrjRc z_kNYrjRd zvdmeg0QWe0 zvdmeg0QWe4 zvdmeg0QWe6">Initialized</button>"`,
         )
       } finally {
         await browser.close()
