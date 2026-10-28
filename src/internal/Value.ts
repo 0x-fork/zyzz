@@ -11,6 +11,9 @@ import * as Literal from './Literal.js'
 import type * as Numeric from './Numeric.js'
 import * as Token from './Token.js'
 
+/** Any value marked important; its unmarked value is checked against the property. */
+export type Important = `${string} !important`
+
 /** Scalar declarations optionally carrying a trailing importance marker. */
 export type Atom<value> =
   | value
@@ -60,8 +63,29 @@ type AcceptedMember<
       : never
     : [value] extends [readonly [unknown, ...unknown[]]]
       ? AcceptedArray<value, property, properties>
-      : LiteralAccepted<value, property, properties>
+      : [value] extends [`${infer body} !important`]
+        ? AcceptedImportant<
+            value,
+            ScalarValue<body, property>,
+            property,
+            properties
+          >
+        : LiteralAccepted<value, property, properties>
   : never
+
+// Property domains accept any `!important` spelling, so the marked value is checked here
+// instead of each domain listing an important variant of every literal.
+type AcceptedImportant<
+  value,
+  body,
+  property extends PropertyKey,
+  properties,
+> = body extends `${string} !important`
+  ? never
+  : [body] extends [LiteralAccepted<body, property, properties>]
+    ? value
+    : // The domain without its important spelling keeps the diagnostic on this value.
+      Exclude<LiteralAccepted<body, property, properties>, Important>
 
 type ScalarValue<value, property> =
   value extends `${infer numeric extends number}`
@@ -89,22 +113,16 @@ type LiteralAccepted<
         ? value & CheckedValue<scalar, property>
         : never
       : never
-    : References<value, Exclude<properties[property], undefined>> &
+    : References<value, properties[property]> &
         ([value] extends [Binding.Reference]
           ? Binding.Reference<
               Extract<value, Binding.Reference>['type']
-            > extends Exclude<properties[property], undefined>
+            > extends properties[property]
             ? value
             : never
           : FunctionValue.Is<value> extends true
-            ? FunctionValue.Accepted<
-                value,
-                Exclude<properties[property], undefined>,
-                property
-              >
-            : [Exclude<value, undefined>] extends [
-                  Exclude<properties[property], undefined>,
-                ]
+            ? FunctionValue.Accepted<value, properties[property], property>
+            : [Exclude<value, undefined>] extends [properties[property]]
               ? Exclude<value, undefined>
               : property extends keyof Literal.Properties
                 ? [value] extends [string | readonly (number | string)[]]
@@ -117,9 +135,9 @@ type LiteralAccepted<
                       >,
                     ]
                     ? value
-                    : Exclude<properties[property], undefined>
-                  : Exclude<properties[property], undefined>
-                : Exclude<properties[property], undefined>)
+                    : properties[property]
+                  : properties[property]
+                : properties[property])
   : never
 
 type References<value, allowed> = value extends Token.Reference

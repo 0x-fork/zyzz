@@ -846,9 +846,15 @@ export class InvalidError extends Error {
   override name = 'Style.InvalidError'
 }
 
+// A required homomorphic copy drops the optional `undefined` from each domain without
+// distributing over its literals, and keeps diagnostics naming the domain itself.
+type Domains = {
+  readonly [property in keyof Literal.Properties]-?: Literal.Properties[property]
+}
+
 type LiteralAtoms = {
-  readonly [property in keyof Literal.Properties]-?: Value.Atom<
-    | Exclude<Literal.Properties[property], undefined>
+  readonly [property in keyof Literal.Properties]-?:
+    | Domains[property]
     | `${string} !custom`
     | Binding.Reference<'*'>
     | {
@@ -859,7 +865,7 @@ type LiteralAtoms = {
           ? Binding.Reference<kind>
           : never
       }[Binding.Kind]
-  >
+    | Value.Important
 }
 
 /** Supported primitive CSS declarations without theme references. */
@@ -905,14 +911,15 @@ type DeclarationValue<
       : [Token.Names<tokens, property>] extends [never]
         ? LiteralAtoms[property]
         :
-            | Value.Atom<`${string} !custom`>
+            | `${string} !custom`
             | Extract<LiteralAtoms[property], Binding.Reference>)
-  | Value.Atom<Token.Names<tokens, property>>
+  | Token.Names<tokens, property>
   | {
       [group in Token.Group]: property extends Token.Properties<group>
-        ? Value.Atom<Token.Reference<group> | Token.Variable<group>>
+        ? Token.Reference<group> | Token.Variable<group>
         : never
     }[Token.Group]
+  | Value.Important
 >
 
 /** Recursive theme-aware declaration and condition authoring. */
